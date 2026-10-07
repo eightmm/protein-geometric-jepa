@@ -102,3 +102,18 @@ def test_resume_rejects_dataset_change(tiny_cfg,tmp_path):
     train(tiny_cfg,training,SyntheticDataset(2,10,1),tmp_path/'r',stop_after=1)
     with pytest.raises(ValueError,match='same dataset'):
         train(tiny_cfg,training,SyntheticDataset(2,10,2),tmp_path/'r',resume=tmp_path/'r'/'last.pt')
+
+
+def test_task_loss_normalizes_global_target_against_crop_nodes(model,protein,monkeypatch):
+    """The single-token global target must receive the crop's node RMS reference."""
+    import protein_jepa.models.jepa as jepa
+    calls=[]
+    original=jepa.make_target
+    def spy(h,valid=None,floor=.1,eps=1e-6,reference=None):
+        calls.append((len(h.s),reference))
+        return original(h,valid,floor,eps,reference)
+    monkeypatch.setattr(jepa,'make_target',spy)
+    obs=make_observation(protein,'bb_infill',.3,torch.Generator().manual_seed(3))
+    model([(protein,obs)],TrainConfig())
+    single=[ref for n,ref in calls if n==1]
+    assert single and all(ref is not None for ref in single)
