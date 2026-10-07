@@ -1,0 +1,19 @@
+SYNTHETIC SMOKE DATA: not physically validated and not a scientific benchmark.
+{"step": 1, "task": "seq_to_bb", "loss": 0.10475510358810425, "grad_norm": 0.3581148087978363}
+{"step": 2, "task": "bb_to_seq", "loss": 0.12250520288944244, "grad_norm": 0.36419808864593506}
+{"step": 3, "task": "cart_to_internal", "loss": 0.770680844783783, "grad_norm": 3.5859832763671875}
+{"step": 4, "task": "internal_to_bb", "loss": 0.12607602775096893, "grad_norm": 0.44010770320892334}
+{"step": 5, "task": "sc_to_chi", "loss": 1.4834034442901611, "grad_norm": 3.966860771179199}
+{"step": 6, "task": "chi_to_sc", "loss": 0.09270107746124268, "grad_norm": 0.31773456931114197}
+{"step": 7, "task": "sc_infill", "loss": 0.19581617414951324, "grad_norm": 0.5028872489929199}
+{"step": 8, "task": "bb_infill", "loss": 0.12637273967266083, "grad_norm": 0.389120876789093}
+{"step": 9, "task": "aa_infill", "loss": 0.19526170194149017, "grad_norm": 0.49116143584251404}
+{"step": 10, "task": "seq_to_bb", "loss": 0.09958329796791077, "grad_norm": 0.3455336093902588}
+{"step": 11, "task": "bb_to_seq", "loss": 0.11957065761089325, "grad_norm": 0.35075291991233826}
+{"step": 12, "task": "cart_to_internal", "loss": 0.7220524549484253, "grad_norm": 4.083804130554199}
+{"step": 13, "task": "internal_to_bb", "loss": 0.12025585770606995, "grad_norm": 0.41937392950057983}
+{"step": 14, "task": "sc_to_chi", "loss": 1.5105717182159424, "grad_norm": 4.149746894836426}
+{"step": 15, "task": "chi_to_sc", "loss": 0.0919930636882782, "grad_norm": 0.3164447844028473}
+{"step": 16, "task": "sc_infill", "loss": 0.20653276145458221, "grad_norm": 0.532027006149292}
+{"step": 17, "task": "bb_infill", "loss": 0.12334409356117249, "grad_norm": 0.36887285113334656}
+{"step": 18, "task": "aa_infill", "loss": 0.18398411571979523, "grad_norm": 0.4571906626224518}

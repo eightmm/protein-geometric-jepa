@@ -2,126 +2,93 @@
 
 **Sequence ↔ backbone ↔ sidechain/all-atom, with node-wise typed latent prediction.**
 
-연구 구현 v0.1. 단백질을 global vector 하나로만 압축하지 않고 **atom / residue / global 표현**을 함께 유지합니다. Sequence Transformer, backbone-only SO(3) GNN, sidechain atom branch, all-atom fusion, backbone internal-coordinate encoder, chi encoder가 포함됩니다. **Sidechain과 χ는 제외하지 않았습니다.**
+연구 구현 **v0.2.0**. Atom / residue / global 표현을 함께 유지하며, Sequence Transformer, backbone-only SO(3) GNN, SC atom branch, AA fusion, backbone internal-coordinate encoder와 χ encoder를 포함합니다. **Sidechain과 χ를 제외하지 않았습니다.**
 
-## 현재 상태
+## v0.2: EFF-Dock-inspired CuEq interaction
 
-CPU reference backend의 학습·역전파·equivariance·mask leakage·checkpoint resume를 실제 테스트했습니다. `reports/`에는 실행 결과가 있습니다. CuEquivariance용 실제 연산 경로도 구현했지만, 제작 환경에 패키지 설치용 네트워크와 GPU가 없어 **CuEq CPU/GPU 경로는 실행 미검증**입니다. 선택한 backend가 없으면 오류를 내며 reference로 몰래 바꾸지 않습니다.
+`model.interaction: effdock`로 BB atom, SC atom, BB residue, AA atom, AA residue의 다섯 단계에서 새 블록을 사용할 수 있습니다. Shared tensor product, dual radial scaling, directed edge-type decay, degree-wise RMSNorm, invariant conditioning, gated aggregation 및 residual equivariant FFN을 통합했습니다. 기존 설정의 기본값은 `baseline`이라 과거 모델을 조용히 바꾸지 않습니다.
 
-**사전학습된 가중치나 downstream 성능 결과는 제공하지 않습니다.** Synthetic demo는 동작 검증용이며, 실제 단백질 모델의 품질을 입증하지 않습니다. 상세 범위는 [구현 상태](docs/STATUS.md)를 확인하세요.
+**실제 CuEq 0.9.0 CPU 연산을 GitHub CI에서 검증했습니다.** 전용 테스트 7개, 18-step 학습, 9개 task 역전파가 통과했습니다. 별도 reference CI는 Python 3.11/3.12/3.13에서 통과했고, 로컬 full suite는 123 passed / 9 optional skips입니다. **CuEq CUDA fused kernel과 GPU 학습은 아직 실행 미검증**입니다. [정확한 검증 범위](docs/V020_VALIDATION.md)를 확인하세요.
+
+사전학습된 가중치나 downstream 성능 향상 주장은 제공하지 않습니다. Synthetic demo는 동작 검증이며, EFF-Dock의 docking checkpoint와 호환되는 모델이 아닙니다. [강화 분석](docs/EFFDOCK_UPGRADE_KO.md)에 원본과의 차이, tradeoff, ablation 및 후속 우선순위를 기록했습니다.
 
 ## 빠른 실행
 
 Python 3.11 이상 환경에서:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+git clone https://github.com/eightmm/protein-geometric-jepa.git
+cd protein-geometric-jepa
 python -m pip install -e '.[dev]'
 pytest -q
-protein-jepa demo --config configs/smoke.yaml --output runs/smoke
+protein-jepa demo --config configs/effdock_smoke.yaml --output runs/effdock-smoke
 ```
 
-PowerShell 활성화는 `.venv\Scripts\Activate.ps1`입니다. 설치 없이 기존 환경에서 실행하려면 Linux에서는 `PYTHONPATH=src python -m protein_jepa.cli ...`를 사용할 수 있습니다.
+기존 baseline smoke는 `configs/smoke.yaml`입니다. Small smoke만 16/24 crop을 쓰며, `configs/effdock_reference.yaml`과 `configs/effdock_cueq_gpu.yaml`은 **128/256 parent crop**을 사용합니다. Output directory는 새 경로를 사용하거나 명시적으로 resume해야 합니다.
 
-128/256 crop은 `configs/reference.yaml`, `configs/cueq_gpu.yaml`에서 사용합니다. `smoke.yaml`만 실행 시간을 줄이기 위해 16/24를 사용합니다.
-
-## 모델 구성
+## 모델과 정보 경계
 
 ```text
-Sequence ── Transformer ────────────────────────────── H_seq + CLS_seq
-
-N/CA/C/O ── BB atom stem ── BB residue GNN ─────────── H_BB + G_BB(0,1,2)
+Sequence ─ Transformer ─────────────────────────── H_seq + CLS_seq
+N/CA/C/O ─ BB atom stem ─ BB residue GNN ───────── H_BB + G_BB(0,1,2)
                                    │
-SC atoms ── SC atom stem ───────────┼── AA fusion ───── H_AA_atom + H_AA + G_AA
-                                   │
-BB angles/torsions ── internal-coordinate Transformer ─ H_BB_internal
-Chi angles + symmetry/validity ── chi Transformer ───── H_chi
-
-Visible view states ── conditional predictor ── masked learned target latents
-                                          └── node / atom / parent-crop global
+SC atoms ─ SC atom stem ───────────┼─ AA fusion ── H_AA_atom + H_AA + G_AA
+BB internal coordinates ─ independent Transformer ─ H_BB_internal
+Chi + symmetry/validity ─ independent Transformer ─ H_chi
+Visible view states ─ conditional predictor ─ masked learned node/atom/global latents
 ```
 
-BB output을 SC/AA feature로 덮어쓰지 않습니다. Cartesian GNN은 scalar, Cartesian vector, symmetric-traceless tensor를 유지합니다. **l=2는 수학적으로 5차원이며 reference 구현에서는 3×3 STF tensor로 저장**합니다. CuEq의 5-component irrep basis와는 명시적으로 변환합니다.
+BB output은 SC/AA 정보로 덮어쓰지 않습니다. 좌표, polymer connectivity, backbone direction, frame, φ/ψ/ω, Cα pseudo-angle/dihedral, sidechain geometry와 χ를 사용합니다. SASA, DSSP, secondary-structure rule label이나 residue physicochemical lookup은 사용하지 않습니다.
 
-## 입력과 target
+구조 hidden state는 scalar, Cartesian vector, STF rank-2 tensor입니다. **l=2는 수학적으로 5차원**이며 3×3 reference 저장 형식과 CuEq의 5-component basis는 명시적으로 변환합니다. Sequence-only context에는 arbitrary world-frame l>0 target을 강제하지 않습니다. 기본 global target은 **선택한 parent crop 전체**이지 원래 단백질 전체가 아닙니다.
 
-- 구조 입력: 좌표, 연결성, backbone direction, local frame, φ/ψ/ω, Cα pseudo-angle/pseudo-dihedral, sidechain geometry 및 χ.
-- 제외: SASA, DSSP, secondary-structure rule label, residue physicochemical lookup, pretrained PLM embedding의 구조 경로 유입.
-- Prediction target: learned semantic/equivariant/circular representations. Raw xyz/angle reconstruction loss로 JEPA를 대체하지 않습니다.
+## 실제 CuEq 사용
 
-Sequence-only context에는 임의의 world-frame l>0 target을 강제하지 않습니다. Geometry context가 있을 때만 equivariant latent loss를 활성화합니다.
+```bash
+python -m pip install 'cuequivariance==0.9.0' 'cuequivariance-torch==0.9.0'
+python -m pip install -e '.[dev,cueq]'
+python -c 'import cuequivariance, cuequivariance_torch'
+pytest tests/test_cueq.py -m 'not cuda' -q
+protein-jepa demo --config configs/effdock_cueq_naive.yaml --output runs/effdock-cueq-cpu
+```
 
-## 실제 구조 데이터
+GPU는 호환되는 CUDA PyTorch와 matching CuEq ops wheel을 설치하고 [GPU 실행 gate](docs/UPGRADE_RUNBOOK.md)를 먼저 통과시킵니다. `reference`는 별도 analytic operator이며 CuEq가 없는 경우 몰래 대체되지 않습니다. Architecture와 backend 변경은 exact resume에서 거부합니다.
+
+## 실제 데이터와 학습
 
 ```bash
 protein-jepa prepare protein.cif --chain A \
   --sequence-map sequence_map.json --output data/protein_A.npz
-protein-jepa audit-manifest data/manifest.jsonl
-protein-jepa train --config configs/reference.yaml \
-  --manifest data/manifest.jsonl --output runs/pretrain
+protein-jepa audit-manifest data/train.jsonl
+protein-jepa train --config configs/effdock_cueq_gpu.yaml \
+  --manifest data/train.jsonl --output runs/effdock-pretrain
 ```
 
-`sequence_map`은 원래 서열의 결손 위치까지 명시합니다. 이것이 없으면 `observed_order_unverified`로 기록하며, 학습기는 기본적으로 거부합니다. Pilot에서만 `allow_observed_order: true`를 명시할 수 있습니다. [데이터 명세](docs/DATA.md)에 형식과 전처리 조건이 있습니다.
+`sequence_map`은 원래 서열의 결손 위치까지 명시합니다. 없으면 `observed_order_unverified`이며 학습은 기본적으로 거부합니다. [DATA.md](docs/DATA.md)의 canonical indexing과 cluster-disjoint split 계약을 따르세요. Manifest 작성, 대규모 학습 및 downstream 검증을 자동 완료한 상태는 아닙니다.
 
-## CuEquivariance
+## 검증과 ablation
 
 ```bash
-python -m pip install -e '.[dev,cueq]'
-pytest -q -m cueq
-protein-jepa demo --config configs/cueq_naive.yaml --output runs/cueq_cpu
+python scripts/validate_effdock.py --config configs/effdock_smoke.yaml \
+  --variants baseline effdock --lengths 128 256 --output runs/effdock-check.json
+python scripts/make_effdock_ablations.py --base configs/effdock_cueq_gpu.yaml \
+  --output runs/ablation-configs --seeds 17 29 43
 ```
 
-GPU에서는 CUDA 버전에 맞는 NVIDIA CuEq ops wheel도 설치하고 다음을 먼저 통과시킵니다.
-
-```bash
-pytest -q -m cuda
-protein-jepa train --config configs/cueq_gpu.yaml \
-  --manifest data/manifest.jsonl --output runs/cueq_gpu
-```
-
-`reference`와 `cueq-*`는 동일한 SO(3) 입출력 계약을 공유하지만 **동일 weight layout/동일한 parameterization의 두 kernel이 아닙니다.** Backend를 바꾸어 기존 checkpoint를 이어 학습하지 않습니다. [CuEq 계약](docs/CUEQ.md) 참조.
-
-## 체크포인트 및 downstream
-
-```bash
-protein-jepa demo --config configs/smoke.yaml --output runs/resume --stop-after 9
-protein-jepa demo --config configs/smoke.yaml --output runs/resume --resume runs/resume/last.pt
-
-protein-jepa encode --checkpoint runs/smoke/last.pt \
-  --sequence MARGKKIGYS --mode sequence --output runs/sequence_features.pt
-protein-jepa encode --checkpoint runs/smoke/last.pt \
-  --record data/protein_A.npz --mode all_atom --output runs/atom_features.pt
-```
-
-`last.pt`에는 online encoder, EMA teacher, predictor, optimizer, scheduler, rank별 RNG, task step과 configuration이 들어갑니다. 동일 world size/configuration에서 resume합니다. Encoder export와 invariant task-head 예제는 [API](docs/API.md)를 참고하세요.
+두 번째 명령은 10개 variant × 3개 seed의 완전한 설정을 생성하며 **학습/job 제출을 시작하지 않습니다.** Equal-step/equal-compute 및 parameter-matched 비교를 구분하세요. 작은 smoke loss로 품질 순위를 판단하지 않습니다.
 
 ## 문서
 
 | 문서 | 내용 |
 |---|---|
-| [SPEC_KO.md](docs/SPEC_KO.md) | 전체 설계, 정보 접근 경계, 수학적 계약, task와 loss |
-| [DATA.md](docs/DATA.md) | Canonical indexing, PDB/mmCIF, PLMol adapter, manifest |
-| [CUEQ.md](docs/CUEQ.md) | Backend 구현과 basis bridge, GPU 검증 gate |
-| [TRAINING.md](docs/TRAINING.md) | 단일 장치/DDP/Slurm, resume, 평가 |
-| [API.md](docs/API.md) | Encoder/downstream 출력과 예제 |
-| [VALIDATION.md](docs/VALIDATION.md) | 실제 테스트 결과와 검증 범위 |
-| [PUBLICATION.md](docs/PUBLICATION.md) | GitHub 게시 상태, 원본 검증 및 사용 방법 |
-| [STATUS.md](docs/STATUS.md) | 구현됨·검증됨·미검증·후속 연구 구분 |
-| [REFERENCES.md](docs/REFERENCES.md) | 1차 출처와 확인 범위 |
+| [EFFDOCK_UPGRADE_KO.md](docs/EFFDOCK_UPGRADE_KO.md) | 원본 EFF-Dock 비교, 수식, 강화 tradeoff, 후속 분석 |
+| [UPGRADE_RUNBOOK.md](docs/UPGRADE_RUNBOOK.md) | CPU/CuEq/GPU gate, 학습·resume·DDP·ablation |
+| [V020_VALIDATION.md](docs/V020_VALIDATION.md) | 이번 릴리스의 실행 증거·CI·미검증 범위 |
+| [SPEC_KO.md](docs/SPEC_KO.md) | 기본 JEPA 설계, view·mask·latent·loss 계약 |
+| [DATA.md](docs/DATA.md) | PDB/mmCIF, PLMol adapter, sequence alignment, manifest |
+| [CUEQ.md](docs/CUEQ.md) | Backend와 irrep basis 변환, compatibility |
+| [TRAINING.md](docs/TRAINING.md), [API.md](docs/API.md) | 기본 학습·추론·downstream API |
+| [STATUS.md](docs/STATUS.md) | 구현·검증·후속 연구의 구분 |
+| [PUBLICATION.md](docs/PUBLICATION.md), [VALIDATION.md](docs/VALIDATION.md) | 역사적 v0.1 게시·검증 기록 |
 
-## GitHub 저장소
-
-코드·명세·테스트가 [eightmm/protein-geometric-jepa](https://github.com/eightmm/protein-geometric-jepa)의 `main`에 게시되어 있습니다.
-
-```bash
-git clone https://github.com/eightmm/protein-geometric-jepa.git
-cd protein-geometric-jepa
-python -m pip install -e '.[dev]'
-pytest -q
-protein-jepa demo --config configs/smoke.yaml --output runs/smoke
-```
-
-원본 v0.1.0의 76개 파일은 [초기 소스 import 커밋](https://github.com/eightmm/protein-geometric-jepa/commit/2b2ee750edd53c3d1e5b836b77d71d63b0b370e1)에 byte-identical하게 보존했습니다. 이후 게시 안내와 재검증 로그를 별도 커밋으로 정리했습니다. [게시 전 재검증](reports/publication_pytest.txt)은 CPU에서 **72 passed, 3 skipped**이며, 실제 원격 CI 결과는 [Actions](https://github.com/eightmm/protein-geometric-jepa/actions)에서 커밋별로 확인합니다.
-
-이 저장소는 사용자가 생성한 **public** 설정을 유지했습니다. 원본 `eightmm/plmol`은 수정하지 않았습니다. 공개 라이선스는 소유자의 결정을 위해 설정하지 않았습니다. `scripts/publish_github.py`는 **다른 새 private 저장소 생성용 보조 도구**이며, 이미 게시된 이 저장소에서 다시 실행할 필요가 없습니다.
+소유자가 만든 **public** 저장소 설정을 유지합니다. `eightmm/EFF-Dock`와 `eightmm/plmol`은 변경하지 않았습니다. 공개 라이선스 선택은 소유자 결정 사항으로 남아 있습니다. 원본 v0.1의 76개 파일은 `2b2ee750edd53c3d1e5b836b77d71d63b0b370e1` 커밋에 보존되어 있습니다. 새 릴리스의 실험 증거는 `reports/v020/`에 별도로 기록합니다.

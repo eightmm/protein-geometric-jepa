@@ -1,0 +1,45 @@
+{
+  "interpretation": "One-seed synthetic tiny-reference functional checks; not a quality experiment",
+  "runs": [
+    {
+      "config": "baseline_seed17.yaml",
+      "finite_backward": true
+    },
+    {
+      "config": "depth6_seed17.yaml",
+      "finite_backward": true
+    },
+    {
+      "config": "effdock_degree_seed17.yaml",
+      "finite_backward": true
+    },
+    {
+      "config": "effdock_gate_seed17.yaml",
+      "finite_backward": true
+    },
+    {
+      "config": "effdock_soft_seed17.yaml",
+      "finite_backward": true
+    },
+    {
+      "config": "no_conditioning_seed17.yaml",
+      "finite_backward": true
+    },
+    {
+      "config": "no_distance_decay_seed17.yaml",
+      "finite_backward": true
+    },
+    {
+      "config": "no_dual_radial_seed17.yaml",
+      "finite_backward": true
+    },
+    {
+      "config": "no_norm_rescale_seed17.yaml",
+      "finite_backward": true
+    },
+    {
+      "config": "no_smooth_cutoff_seed17.yaml",
+      "finite_backward": true
+    }
+  ]
+}

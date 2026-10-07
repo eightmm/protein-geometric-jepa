@@ -1,0 +1,26 @@
+
+*****************************************
+Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+*****************************************
+SYNTHETIC SMOKE DATA: not physically validated and not a scientific benchmark.
+SYNTHETIC SMOKE DATA: not physically validated and not a scientific benchmark.
+[Gloo] Rank 0 is connected to 1 peer ranks. [Gloo] Rank Expected number of connected peer ranks is : 1
+1 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
+{"step": 1, "task": "seq_to_bb", "loss": 0.10518717765808105, "grad_norm": 0.3605029881000519}
+{"step": 2, "task": "bb_to_seq", "loss": 0.12164796143770218, "grad_norm": 0.3683444857597351}
+{"step": 3, "task": "cart_to_internal", "loss": 0.7259806394577026, "grad_norm": 3.8376314640045166}
+{"step": 4, "task": "internal_to_bb", "loss": 0.1255510449409485, "grad_norm": 0.43750160932540894}
+{"step": 5, "task": "sc_to_chi", "loss": 1.5249640941619873, "grad_norm": 3.7209672927856445}
+{"step": 6, "task": "chi_to_sc", "loss": 0.09315970540046692, "grad_norm": 0.3187010884284973}
+{"step": 7, "task": "sc_infill", "loss": 0.20777949690818787, "grad_norm": 0.524259090423584}
+{"step": 8, "task": "bb_infill", "loss": 0.12554439902305603, "grad_norm": 0.3870733678340912}
+{"step": 9, "task": "aa_infill", "loss": 0.19851163029670715, "grad_norm": 0.4874526262283325}
+{"step": 10, "task": "seq_to_bb", "loss": 0.09816192090511322, "grad_norm": 0.3369915187358856}
+{"step": 11, "task": "bb_to_seq", "loss": 0.11934290826320648, "grad_norm": 0.34857532382011414}
+{"step": 12, "task": "cart_to_internal", "loss": 0.7434512376785278, "grad_norm": 3.316470146179199}
+{"step": 13, "task": "internal_to_bb", "loss": 0.11887237429618835, "grad_norm": 0.4141741394996643}
+{"step": 14, "task": "sc_to_chi", "loss": 1.4892008304595947, "grad_norm": 3.70295786857605}
+{"step": 15, "task": "chi_to_sc", "loss": 0.09206683933734894, "grad_norm": 0.31591787934303284}
+{"step": 16, "task": "sc_infill", "loss": 0.19798997044563293, "grad_norm": 0.49678853154182434}
+{"step": 17, "task": "bb_infill", "loss": 0.12514200806617737, "grad_norm": 0.38071516156196594}
+{"step": 18, "task": "aa_infill", "loss": 0.19372451305389404, "grad_norm": 0.49135252833366394}

@@ -1,0 +1,35 @@
+{
+  "provenance": "Manually transcribed from the completed GitHub Actions job log; not a raw log file.",
+  "code_commit": "4de2b0e916fc254be9856229909d0478425bf318",
+  "workflow_run": 37573920388,
+  "job": 112638454109,
+  "conclusion": "success",
+  "url": "https://github.com/eightmm/protein-geometric-jepa/actions/runs/37573920388/job/112638454109",
+  "environment": {
+    "python": "3.11.16",
+    "torch": "2.14.1+cpu",
+    "cuequivariance": "0.9.0",
+    "cuequivariance-torch": "0.9.0",
+    "numpy": "2.4.6"
+  },
+  "pytest": {
+    "passed": 7,
+    "deselected_cuda": 2,
+    "seconds": 9.05
+  },
+  "training": {
+    "optimizer_steps": 18,
+    "tasks": 9,
+    "cycles": 2,
+    "last_task": "aa_infill",
+    "last_loss": 0.14437100291252136,
+    "last_grad_norm": 0.3391108810901642
+  },
+  "task_diagnostic": {
+    "length": 32,
+    "tasks_passed": 9,
+    "finite_backward": true
+  },
+  "cuda_tested": false,
+  "artifact_id": 11461654291
+}
