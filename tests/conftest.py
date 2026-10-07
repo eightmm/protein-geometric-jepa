@@ -16,7 +16,7 @@ def threads_and_seed():
 def tiny_cfg():
     return ModelConfig(scalar=16, vector=4, tensor=2, sequence_width=32, sequence_layers=1,
                        atom_layers=1, backbone_layers=1, aa_layers=1, internal_layers=1,
-                       latent_scalar=16, latent_vector=4, latent_tensor=2, circular_channels=4)
+                       predictor_layers=2)
 
 
 @pytest.fixture

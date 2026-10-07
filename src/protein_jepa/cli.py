@@ -3,7 +3,7 @@ import argparse
 import json
 from pathlib import Path
 import torch
-from .config import load_config, ModelConfig
+from .config import load_config, model_config
 from .data.io import read_structure
 from .data.records import ProteinRecord
 from .data.synthetic import sequence_record
@@ -77,7 +77,7 @@ def main(argv=None):
     elif args.command == 'encode':
         torch.set_num_threads(2)
         checkpoint = load_checkpoint(args.checkpoint)
-        cfg = ModelConfig(**checkpoint['model_config'])
+        cfg = model_config(checkpoint['model_config'])
         model = ProteinJEPA(cfg)
         model.load_state_dict(checkpoint['model'])
         record = ProteinRecord.load(args.record) if args.record else sequence_record(args.sequence)

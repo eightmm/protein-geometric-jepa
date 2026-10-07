@@ -32,6 +32,40 @@ def test_all_encoder_paths_receive_gradients_across_tasks(model,protein):
         assert any(p.grad is not None and bool(p.grad.abs().sum()) for p in module.parameters()),view
 
 
+def test_every_teacher_target_parameter_is_trained_online(model,protein):
+    """JEPA invariant: the EMA teacher may only use weights the student trains.
+
+    One optimizer step first wakes zero-initialized gates, so only permanently
+    dead target-path weights (e.g. a never-consumed online branch) fail.
+    """
+    model.train()
+    # Adam moves every touched weight by ~lr, so zero-initialized gates wake up.
+    optimizer=torch.optim.Adam([p for p in model.parameters() if p.requires_grad],lr=1e-2)
+    def touched():
+        return {n for n,p in model.online.named_parameters()
+                if p.grad is not None and float(p.grad.abs().max())>1e-7}
+    def cycle():
+        optimizer.zero_grad(set_to_none=True)
+        for task in TASKS:
+            obs=make_observation(protein,task,.3,torch.Generator().manual_seed(6))
+            loss,_=model([(protein,obs)],TrainConfig()); loss.backward()
+        return touched()
+    cycle(); optimizer.step()
+    trained=cycle()
+    optimizer.zero_grad(set_to_none=True)
+    for view in ('seq','bb','sc','aa','bb_internal','chi'):
+        out=model.online.encoder(protein,(view,))[view]
+        parts=[out.nodes.index(out.node_valid),out.global_state]
+        if view=='aa':
+            parts.append(out.atoms)
+        # Random linear probe: a norm-based probe could miss sign-symmetric paths.
+        g=torch.Generator().manual_seed(len(view))
+        sum((x*torch.randn(x.shape,generator=g)).sum() for h in parts for x in (h.s,h.v,h.t)).backward()
+    used=touched()
+    assert used, 'target probe produced no gradient'
+    assert not used-trained, sorted(used-trained)
+
+
 def test_teacher_ema_exact_and_eval(model):
     online=dict(model.online.named_parameters()); teacher=dict(model.teacher.named_parameters())
     name=next(iter(online)); before=teacher[name].detach().clone()
@@ -43,8 +77,7 @@ def test_teacher_ema_exact_and_eval(model):
 
 
 def test_zero_valid_loss_is_differentiable_zero(model,protein):
-    h=model.online.encoder(protein,('seq',))['seq'].nodes
-    z=model.online.projectors['seq'](h)
+    z=model.online.encoder(protein,('seq',))['seq'].nodes
     loss,info=latent_distance(z,z.detach(),torch.zeros(len(protein),dtype=torch.bool))
     assert float(loss.detach())==0 and info['valid_targets']==0
     loss.backward()

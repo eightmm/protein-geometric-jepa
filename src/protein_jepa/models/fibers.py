@@ -122,8 +122,9 @@ class GlobalReadout(nn.Module):
     """Invariant learned attention; l>0 is generated ONLY from input geometry."""
     def __init__(self, dims: FiberDims):
         super().__init__()
+        # No final bias: softmax is shift-invariant, so it could never train.
         self.score = nn.Sequential(nn.Linear(dims.invariant, dims.scalar), nn.SiLU(),
-                                   nn.Linear(dims.scalar, 1))
+                                   nn.Linear(dims.scalar, 1, bias=False))
         self.scalar_query = nn.Parameter(torch.zeros(dims.scalar))
         self.mix = FiberLinear(dims, dims)
         self.dims = dims

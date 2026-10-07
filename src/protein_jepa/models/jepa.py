@@ -1,4 +1,4 @@
-"""Online/EMA encoder sets plus predictors. No raw-coordinate reconstruction loss."""
+"""Online encoder, EMA teacher encoder and JEPA predictor. No coordinate reconstruction."""
 from copy import deepcopy
 import torch
 from torch import nn
@@ -6,14 +6,16 @@ from ..config import ModelConfig, TrainConfig
 from ..objectives.losses import latent_distance, regularize_latents
 from ..objectives.tasks import Observation
 from .encoders import MultiViewEncoder
-from .predictors import (CrossViewPredictor, LatentProjector, VIEW_NAMES, PERIODIC_VIEWS)
+from .predictors import (CrossViewPredictor, make_target, reference_rms, topology_atoms,
+                         low_rms_fraction)
 
 
 class TargetStack(nn.Module):
+    """The EMA-tracked part. v0.3 targets need no projector: every teacher
+    weight that shapes a target is a weight the online encoder trains."""
     def __init__(self, cfg):
         super().__init__()
         self.encoder = MultiViewEncoder(cfg)
-        self.projectors = nn.ModuleDict({name: LatentProjector(cfg) for name in VIEW_NAMES})
 
 
 class ProteinJEPA(nn.Module):
@@ -45,57 +47,67 @@ class ProteinJEPA(nn.Module):
                                       observation.seq_visible)
         with torch.no_grad():
             target = self.teacher.encoder(record, (spec.target,))[spec.target]
-            target_nodes = self.teacher.projectors[spec.target](target.nodes)
-            target_global = self.teacher.projectors[spec.target](target.global_state)
-        prediction = self.predictor(context, record.seq_pos, spec.target, record.seq_pos)
-        mask = observation.target_residues & target.node_valid
-        node_loss, info = latent_distance(prediction, target_nodes, mask, spec.equivariant,
-                                          spec.target in PERIODIC_VIEWS)
-        global_pred = self.predictor(context, record.seq_pos, spec.target,
-                                     record.seq_pos.new_zeros(1), level="global")
-        global_mask = torch.tensor([target.global_valid and any(v.global_valid for v in context.values())],
-                                    device=record.xyz.device)
-        global_loss, _ = latent_distance(global_pred, target_global, global_mask, spec.equivariant, False)
-        atom_loss = node_loss*0
+        # Mask tokens sit at the OBSERVATION's target residues and atom tokens
+        # follow the visible-sequence topology; teacher validity/presence only
+        # filters the loss, so hidden atom presence never shapes any query.
+        query = torch.where(observation.target_residues)[0]
+        atom_residues = atom_slots = None
         if spec.atom_loss and target.atoms is not None:
-            select = observation.target_residues[target.atom_residue]
-            if observation.task_name == "sc_infill":
-                select &= target.atom_slot >= 4
-            ri, ai = target.atom_residue[select], target.atom_slot[select]
-            if len(ri):
-                with torch.no_grad():
-                    atom_target = self.teacher.projectors[spec.target](target.atoms.index(select))
-                atom_pred = self.predictor(context, record.seq_pos, spec.target,
-                                           record.seq_pos[ri], "atom", ai)
-                atom_loss, _ = latent_distance(atom_pred, atom_target,
-                                               torch.ones(len(ri), device=ri.device, dtype=torch.bool), True, False)
-        # Return online latents to regularize at microbatch level, grouped by view.
-        regularizer_inputs = {}
-        for name, encoded in context.items():
-            if bool(encoded.node_valid.any()):
-                regularizer_inputs[name] = self.online.projectors[name](encoded.nodes.index(encoded.node_valid))
+            atom_residues, atom_slots = topology_atoms(
+                record.seq, observation.seq_visible, query, observation.task_name == "sc_infill")
+        prediction = self.predictor(context, record.seq_pos, spec.target, query,
+                                    atom_residues, atom_slots)
+        floor = train_cfg.target_floor
+        with torch.no_grad():
+            target_nodes = make_target(target.nodes, target.node_valid, floor).index(query)
+            target_global = make_target(target.global_state, None, floor,
+                                        reference=reference_rms(target.nodes, target.node_valid))
+        node_loss, info = latent_distance(prediction.nodes, target_nodes,
+                                          target.node_valid[query], spec.equivariant)
+        observed = any(v.global_valid or bool(v.node_valid.any()) for v in context.values())
+        global_mask = torch.tensor([target.global_valid and observed], device=record.xyz.device)
+        global_loss, _ = latent_distance(prediction.global_state, target_global, global_mask,
+                                         spec.equivariant)
+        atom_loss = node_loss*0
+        if atom_residues is not None and len(atom_residues) and len(target.atom_residue):
+            # Align topology queries with observed teacher atoms (key = residue*37+slot);
+            # queries without an observed atom are masked out of the loss.
+            keys = target.atom_residue*37+target.atom_slot
+            order = keys.argsort()
+            wanted = atom_residues*37+atom_slots
+            where = torch.searchsorted(keys[order], wanted).clamp_max(len(keys)-1)
+            observed_atom = keys[order][where] == wanted
+            with torch.no_grad():
+                atom_target = make_target(target.atoms, None, floor).index(order[where])
+            atom_loss, _ = latent_distance(prediction.atoms, atom_target, observed_atom, True)
+        # Online context scalars BEFORE normalization: layer-normed scalars sum
+        # to zero, which would make the covariance penalty fight the norm itself.
+        regularizer_inputs = {name: encoded.nodes.s[encoded.node_valid]
+                              for name, encoded in context.items() if bool(encoded.node_valid.any())}
         loss = node_loss + train_cfg.global_weight*global_loss + train_cfg.atom_weight*atom_loss
+        info.update(target_low_rms=low_rms_fraction(target.nodes, target.node_valid, floor))
         info.update(task=observation.task_name, node_loss=float(node_loss.detach()),
                     global_loss=float(global_loss.detach()), atom_loss=float(atom_loss.detach()))
         return loss, info, regularizer_inputs
 
     def forward(self, records_and_observations, train_cfg: TrainConfig):
-        losses, logs, groups = [], [], {}
+        by_task, logs, groups = {}, [], {}
         for record, observation in records_and_observations:
             loss, info, inputs = self.task_loss(record, observation, train_cfg)
-            losses.append(loss)
+            by_task.setdefault(observation.task_name, []).append(loss)
             logs.append(info)
             for name, latent in inputs.items():
                 groups.setdefault(name, []).append(latent)
-        if not losses:
+        if not by_task:
             raise ValueError("Empty microbatch.")
-        loss = torch.stack(losses).mean()
+        # Mean within each task, then across tasks: a mixed microbatch is not
+        # dominated by whichever task happens to have more samples.
+        loss = torch.stack([torch.stack(v).mean() for v in by_task.values()]).mean()
         reglogs = {}
         regs = []
         for name, latents in groups.items():
-            var, cov, circ, info = regularize_latents(latents)
-            regs.append(train_cfg.variance_weight*var + train_cfg.covariance_weight*cov
-                        + (train_cfg.circular_weight*circ if name in PERIODIC_VIEWS else 0))
+            var, cov, info = regularize_latents(latents)
+            regs.append(train_cfg.variance_weight*var + train_cfg.covariance_weight*cov)
             reglogs[name] = info
         if regs:
             loss = loss + torch.stack(regs).mean()

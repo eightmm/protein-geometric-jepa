@@ -12,6 +12,7 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 from .fibers import Fiber, FiberDims, FiberLinear
+from ..geometry.primitives import outer_stf, symmetric_traceless
 from .equivariant import CartesianMessage
 from ..data.graphs import Graph, NUM_EDGE_TYPES
 
@@ -109,6 +110,61 @@ class StableNormRescale(nn.Module):
                      h.t*(1+0.1*self.t_map(tn).tanh())[..., None, None])
 
 
+def axis_projections(h: Fiber, unit: Tensor) -> Tensor:
+    """Per-channel v.r and r^T T r: invariants that keep angular information."""
+    quad = outer_stf(unit)[:, None]
+    return torch.cat(((h.v*unit[:, None]).sum(-1), (h.t*quad).sum((-1, -2))), -1)
+
+
+class GatedFFN(nn.Module):
+    """v0.2 FFN: channel mixing and norm gates only, no cross-degree products."""
+    def __init__(self, dims: FiberDims, expansion: int = 2):
+        super().__init__()
+        wide = FiberDims(dims.scalar*expansion, dims.vector*expansion, dims.tensor*expansion)
+        self.up, self.down = FiberLinear(dims, wide), FiberLinear(wide, dims)
+        self.act = NormGate(wide)
+
+    def forward(self, h: Fiber) -> Fiber:
+        return self.down(self.act(self.up(h)))
+
+
+class EquivariantFFN(nn.Module):
+    """Bilinear SO(3) FFN: scalars see channel dot products, l>0 can be created.
+
+    Products between linear views of a pre-normalized input couple degrees
+    (v.v', T:T' -> l=0; v x v', T v' -> l=1; v (x) v', {T T'} -> l=2). Every
+    product vanishes when its l>0 inputs vanish, so a state without geometry
+    never acquires a world-frame vector. Callers pre-normalize the input and
+    scale the residual; products enter with a learnable 0.1 initial weight.
+    """
+    def __init__(self, dims: FiberDims, expansion: int = 2):
+        super().__init__()
+        w = FiberDims(dims.scalar*expansion, dims.vector*expansion, dims.tensor*expansion)
+        self.wide = w
+        self.a = FiberLinear(dims, w)
+        self.b = FiberLinear(dims, w, scalar_bias=False)
+        self.tv = nn.Linear(dims.vector, w.tensor, bias=False)  # partner of T v
+        self.scalar = nn.Linear(w.scalar+2*w.vector+2*w.tensor, w.scalar)
+        self.gates = nn.Linear(w.scalar, w.vector+w.tensor)
+        self.product_scale = nn.Parameter(torch.full((4,), 0.1))
+        self.down = FiberLinear(FiberDims(w.scalar, 2*w.vector+w.tensor, 2*w.tensor+w.vector), dims)
+
+    def forward(self, h: Fiber) -> Fiber:
+        a, b = self.a(h), self.b(h)
+        partner = torch.einsum('ab,nbj->naj', self.tv.weight, h.v)
+        invariants = (a.s, (a.v.square().sum(-1)+1e-8).sqrt(),
+                      (a.t.square().sum((-1, -2))+1e-8).sqrt(),
+                      (a.v*b.v).sum(-1), (a.t*b.t).sum((-1, -2)))
+        s = F.silu(self.scalar(torch.cat(invariants, -1)))
+        gv, gt = self.gates(s).sigmoid().split((self.wide.vector, self.wide.tensor), -1)
+        c = self.product_scale
+        v = torch.cat((a.v*gv[..., None], c[0]*torch.linalg.cross(a.v, b.v, dim=-1),
+                       c[1]*(a.t@partner[..., None])[..., 0]), 1)
+        t = torch.cat((a.t*gt[..., None, None], c[2]*outer_stf(a.v, b.v),
+                       c[3]*symmetric_traceless(a.t@b.t)), 1)
+        return self.down(Fiber(s, v, t))
+
+
 def gated_aggregate(h: Fiber, gates: Tensor, dst: Tensor, n: int,
                     dims: FiberDims, mode: str = 'soft') -> Fiber:
     """Per-channel aggregation with explicit attention-mass semantics.
@@ -149,7 +205,9 @@ class EffDockInteractionBlock(nn.Module):
                  dropout: float = 0.0, expansion: int = 2, residual_scale: float = 0.1,
                  aggregation: str = 'soft', stage: int = 0, conditional: bool = True,
                  dual_radial: bool = True, distance_decay: bool = True,
-                 norm_rescale: bool = True, smooth_cutoff: bool = True):
+                 norm_rescale: bool = True, smooth_cutoff: bool = True,
+                 directional: bool = False, ffn: str = 'gate',
+                 adaptive_cutoff: bool = False):
         super().__init__()
         if radial_hidden < 1 or expansion < 1 or cutoff <= 0:
             raise ValueError('Block widths/expansion/cutoff must be positive.')
@@ -157,10 +215,13 @@ class EffDockInteractionBlock(nn.Module):
             raise ValueError('Invalid aggregation or encoder stage.')
         if not 0 < residual_scale <= 1:
             raise ValueError('residual_scale must be in (0,1].')
+        if ffn not in {'bilinear', 'gate'}:
+            raise ValueError(f'Unknown effdock FFN: {ffn}')
         self.dims, self.cutoff, self.aggregation = dims, float(cutoff), aggregation
         self.stage, self.conditional = stage, conditional
         self.dual_radial, self.distance_decay = dual_radial, distance_decay
-        self.smooth_cutoff = smooth_cutoff
+        self.smooth_cutoff, self.directional = smooth_cutoff, directional
+        self.adaptive_cutoff = adaptive_cutoff
         if backend == 'reference':
             self.message = CartesianMessage(dims)
         elif backend in {'cueq-naive', 'cueq-cuda'}:
@@ -178,8 +239,11 @@ class EffDockInteractionBlock(nn.Module):
             for m in (self.radial_in, self.radial_out):
                 nn.init.zeros_(m.weight)
                 nn.init.zeros_(m.bias)
+        # Optional source/destination projections onto the edge axis (v.r, r^T T r):
+        # rotation invariants that norms alone cannot express.
+        directional_dim = 2*(dims.vector+dims.tensor) if directional else 0
         self.attention = nn.Sequential(
-            nn.Linear(radial_hidden+2*dims.invariant, radial_hidden), nn.SiLU(),
+            nn.Linear(radial_hidden+2*dims.invariant+directional_dim, radial_hidden), nn.SiLU(),
             nn.Linear(radial_hidden, dims.invariant))
         if distance_decay:
             self.log_sigma = nn.Embedding(NUM_EDGE_TYPES, 1)
@@ -191,15 +255,14 @@ class EffDockInteractionBlock(nn.Module):
         self.drop = FiberDropout(dims, dropout)
         self.message_scale = nn.Parameter(torch.full((dims.invariant,), residual_scale))
         self.ffn_scale = nn.Parameter(torch.full((dims.invariant,), residual_scale))
+        # Each block owns its weights, so no stage embedding is needed: a
+        # per-block constant would only duplicate the modulation bias.
         if conditional:
-            self.stage_embedding = nn.Embedding(5, dims.scalar)
             self.context = nn.Sequential(nn.Linear(dims.invariant+1, dims.scalar), nn.SiLU())
             self.ffn_norm = ConditionalFiberNorm(dims, dims.scalar)
         else:
             self.ffn_norm = FiberRMSNorm(dims)
-        wider = FiberDims(dims.scalar*expansion, dims.vector*expansion, dims.tensor*expansion)
-        self.ffn_up, self.ffn_down = FiberLinear(dims, wider), FiberLinear(wider, dims)
-        self.ffn_act = NormGate(wider)
+        self.ffn = EquivariantFFN(dims, expansion) if ffn == 'bilinear' else GatedFFN(dims, expansion)
 
     def forward(self, h: Fiber, graph: Graph) -> Fiber:
         n = len(h.s)
@@ -223,12 +286,18 @@ class EffDockInteractionBlock(nn.Module):
                 msg = channel_scale(msg, 1+0.5*self.radial_out(trunk).tanh(), self.dims)
             msg = self.message_act(msg)
             inv = normed.invariant()
-            gates = self.attention(torch.cat((trunk, inv[src], inv[dst]), -1)).sigmoid()
+            features = [trunk, inv[src], inv[dst]]
+            if self.directional:
+                features += [axis_projections(normed.index(src), graph.direction),
+                             axis_projections(normed.index(dst), graph.direction)]
+            gates = self.attention(torch.cat(features, -1)).sigmoid()
             if self.distance_decay:
                 sigma = self.log_sigma(types).clamp(-3, 6).exp()
                 gates = gates*(-graph.distance[:, None]/sigma).exp()
             if self.smooth_cutoff:
-                envelope = 0.5*(1+torch.cos(torch.pi*(graph.distance/self.cutoff).clamp(0, 1)))
+                cutoff = (graph.cutoff.clamp_max(self.cutoff)
+                          if self.adaptive_cutoff and graph.cutoff is not None else self.cutoff)
+                envelope = 0.5*(1+torch.cos(torch.pi*(graph.distance/cutoff).clamp(0, 1)))
                 # Explicit bonds survive the spatial cutoff; they remain typed.
                 envelope = torch.where(graph.relation[:, 2] > 0.5,
                                        torch.ones_like(envelope), envelope)
@@ -238,9 +307,8 @@ class EffDockInteractionBlock(nn.Module):
             h = h + channel_scale(self.drop(self.post(msg)), self.message_scale, self.dims)
         if self.conditional:
             context = self.context(torch.cat((normed.invariant(), mass.log1p()[:, None]), -1))
-            context = context+self.stage_embedding.weight[self.stage]
             ffn_input = self.ffn_norm(h, context)
         else:
             ffn_input = self.ffn_norm(h)
-        delta = self.ffn_down(self.ffn_act(self.ffn_up(ffn_input)))
+        delta = self.ffn(ffn_input)
         return h + channel_scale(self.drop(delta), self.ffn_scale, self.dims)

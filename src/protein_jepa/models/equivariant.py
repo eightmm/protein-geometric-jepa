@@ -2,7 +2,7 @@
 import torch
 from torch import nn, Tensor
 from .fibers import Fiber, FiberDims, FiberActivation, scatter_fiber
-from ..geometry.primitives import outer_stf
+from ..geometry.primitives import outer_stf, symmetric_traceless
 from ..data.graphs import Graph
 
 
@@ -17,11 +17,29 @@ class RadialFeatures(nn.Module):
         return torch.cat((rbf, g.relation), dim=-1)
 
 
-class CartesianMessage(nn.Module):
-    """Analytic SO(3) contractions; includes parity-odd cross products.
+def axial(m: Tensor) -> Tensor:
+    """Vector dual of the antisymmetric part of a 3x3 matrix (l=1 content)."""
+    return torch.stack((m[..., 1, 2]-m[..., 2, 1], m[..., 2, 0]-m[..., 0, 2],
+                        m[..., 0, 1]-m[..., 1, 0]), dim=-1)
 
-    This is a correctness/reference architecture, NOT a weight-identical CuEq
-    tensor product. It supports l=0,1,2 without e3nn or CUDA dependencies.
+
+def cross(a: Tensor, b: Tensor) -> Tensor:
+    """Cross product over the last axis with explicit broadcasting."""
+    a, b = torch.broadcast_tensors(a, b)
+    return torch.linalg.cross(a, b, dim=-1)
+
+
+def mix(linear: nn.Linear, x: Tensor) -> Tensor:
+    """Channel mixing with one weight for every Cartesian component."""
+    return torch.einsum('ab,nb...->na...', linear.weight, x)
+
+
+class CartesianMessage(nn.Module):
+    """Analytic SO(3) contractions of h_src with Y_0..2(direction).
+
+    Every Clebsch-Gordan path of (0+1+2) x (0+1+2) -> (0+1+2) is present, the
+    same path set as CuEq's FullyConnectedTensorProduct, including parity-odd
+    cross products. Normalization and weights are NOT identical to CuEq.
     """
     def __init__(self, dims: FiberDims):
         super().__init__()
@@ -29,18 +47,26 @@ class CartesianMessage(nn.Module):
         self.ss, self.vs, self.ts = nn.Linear(s, s), nn.Linear(v, s, False), nn.Linear(t, s, False)
         self.vv, self.sv, self.tv = nn.Linear(v, v, False), nn.Linear(s, v, False), nn.Linear(t, v, False)
         self.cross = nn.Linear(v, v, False)
+        self.qv, self.tqv = nn.Linear(v, v, False), nn.Linear(t, v, False)    # 1x2->1, 2x2->1
         self.tt, self.st, self.vt = nn.Linear(t, t, False), nn.Linear(s, t, False), nn.Linear(v, t, False)
+        self.tct, self.vqt, self.tqt = (nn.Linear(t, t, False), nn.Linear(v, t, False),
+                                        nn.Linear(t, t, False))           # 2x1, 1x2, 2x2 -> 2
 
     def forward(self, h: Fiber, unit: Tensor):
         u = unit[:, None, :]
-        quad = outer_stf(unit)
-        s = self.ss(h.s) + self.vs((h.v*u).sum(-1)) + self.ts((h.t*quad[:, None]).sum((-1, -2)))
-        v = (torch.einsum('ab,nbj->naj', self.vv.weight, h.v) + self.sv(h.s)[..., None]*u
-             + torch.einsum('ab,nbij,nj->nai', self.tv.weight, h.t, unit)
-             + torch.linalg.cross(torch.einsum('ab,nbj->naj', self.cross.weight, h.v), u))
-        mixed = torch.einsum('ab,nbj->naj', self.vt.weight, h.v)
-        t = (torch.einsum('ab,nbij->naij', self.tt.weight, h.t)
-             + self.st(h.s)[..., None, None]*quad[:, None] + outer_stf(mixed, u))
+        quad = outer_stf(unit)[:, None]
+        s = self.ss(h.s) + self.vs((h.v*u).sum(-1)) + self.ts((h.t*quad).sum((-1, -2)))
+        tq = mix(self.tqv, h.t) @ quad
+        v = (mix(self.vv, h.v) + self.sv(h.s)[..., None]*u
+             + torch.einsum('nbij,nj->nbi', mix(self.tv, h.t), unit)
+             + cross(mix(self.cross, h.v), u)
+             + (quad @ mix(self.qv, h.v)[..., None])[..., 0] + axial(tq))
+        tc = mix(self.tct, h.t)
+        t = (mix(self.tt, h.t) + self.st(h.s)[..., None, None]*quad
+             + outer_stf(mix(self.vt, h.v), u)
+             + symmetric_traceless(cross(tc, u[..., None, :]))
+             + outer_stf(cross(mix(self.vqt, h.v), u), u)
+             + symmetric_traceless(mix(self.tqt, h.t) @ quad))
         return Fiber(s, v, t)
 
 

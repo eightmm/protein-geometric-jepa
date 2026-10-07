@@ -71,3 +71,15 @@ SC_BONDS = {
     "TYR": ["CB-CG", "CG-CD1", "CG-CD2", "CD1-CE1", "CD2-CE2", "CE1-CZ", "CE2-CZ", "CZ-OH"],
     "VAL": ["CB-CG1", "CB-CG2"],
 }
+
+
+def _residue_atoms(name: str) -> tuple[str, ...]:
+    atoms = ["N", "CA", "C", "O"] + ([] if name == "GLY" else ["CB"])
+    for bond in SC_BONDS[name]:
+        atoms += [a for a in bond.split("-") if a not in atoms]
+    return tuple(atoms)
+
+
+# Canonical heavy atoms implied by the residue type alone (no OXT). Atom mask
+# tokens come from this topology, never from which atoms were observed.
+RESIDUE_ATOMS = {name: _residue_atoms(name) for name in AA3}

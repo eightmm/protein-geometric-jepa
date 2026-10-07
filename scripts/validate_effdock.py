@@ -29,7 +29,7 @@ def main():
     parser.add_argument('--config', default='configs/effdock_smoke.yaml')
     parser.add_argument('--backend', choices=['reference', 'cueq-naive', 'cueq-cuda'])
     parser.add_argument('--lengths', type=int, nargs='+', default=[128, 256])
-    parser.add_argument('--variants', nargs='+', choices=['baseline', 'effdock'],
+    parser.add_argument('--variants', nargs='+', choices=['baseline', 'effdock', 'effdock-full'],
                         default=['baseline', 'effdock'])
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
@@ -52,7 +52,10 @@ def main():
     results = []
     for variant in args.variants:
         torch.manual_seed(training.seed)
-        effective = replace(cfg, interaction=variant)
+        full = dict(effdock_ffn='bilinear', effdock_directional=True,
+                    effdock_adaptive_cutoff=True, sc_context='spatial')
+        effective = replace(cfg, interaction=variant.split('-')[0],
+                            **(full if variant == 'effdock-full' else {}))
         model = ProteinJEPA(effective).to(device).train()
         parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
         rows = []
@@ -63,7 +66,8 @@ def main():
             for task in TASKS:
                 model.zero_grad(set_to_none=True)
                 obs = make_observation(record, task, training.mask_fraction,
-                                       torch.Generator().manual_seed(2))
+                                       torch.Generator().manual_seed(2), training.mask_blocks,
+                                       training.mask_mode, training.mask_min_span)
                 if torch.device(device).type == 'cuda':
                     torch.cuda.reset_peak_memory_stats(device)
                 synchronize(device); start = time.perf_counter()

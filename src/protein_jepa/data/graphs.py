@@ -20,6 +20,9 @@ class Graph:
     direction: Tensor
     relation: Tensor     # [E,3], same_residue, signed_seq_sep/32, bond
     edge_type: Tensor | None = None  # integer directed role/bond type; legacy=0
+    # Per-edge smooth-envelope radius: the destination's (k+1)-th candidate
+    # distance when top-k truncates, else the graph radius. None = block cutoff.
+    cutoff: Tensor | None = None
 
 
 def atom_bonds(record: ProteinRecord, residues: Tensor, slots: Tensor, backbone_only=False) -> Tensor:
@@ -64,6 +67,7 @@ def make_graph(x: Tensor, residue_index: Tensor, seq_pos: Tensor, bonds: Tensor,
         if bool(((node_kind < 0) | (node_kind >= NUM_NODE_KINDS)).any()):
             raise ValueError("Invalid node_kind.")
     edges = []
+    node_cutoff = x.new_full((n,), float(radius))
     with torch.no_grad():
         for start in range(0, n, chunk_size):
             stop = min(start+chunk_size, n)
@@ -75,6 +79,13 @@ def make_graph(x: Tensor, residue_index: Tensor, seq_pos: Tensor, bonds: Tensor,
                 keep &= residue_index[start:stop, None] == residue_index[None, :]
             d = d.masked_fill(~keep, torch.inf)
             k = min(max_neighbors, n)
+            if max_neighbors < n:
+                # The first excluded candidate defines where the envelope must
+                # vanish, so entering/leaving the top-k set is continuous.
+                ranked, _ = d.topk(max_neighbors+1, largest=False, sorted=True)
+                excluded = ranked[:, -1]
+                node_cutoff[start:stop] = torch.where(torch.isfinite(excluded), excluded,
+                                                      node_cutoff[start:stop])
             vals, src = d.topk(k, largest=False, sorted=False)
             dst = torch.arange(start, stop, device=device)[:, None].expand_as(src)
             ok = torch.isfinite(vals)
@@ -102,7 +113,8 @@ def make_graph(x: Tensor, residue_index: Tensor, seq_pos: Tensor, bonds: Tensor,
     is_bond = is_bond.to(x.dtype)
     same = (residue_index[src] == residue_index[dst]).to(x.dtype)
     sep = (seq_pos[residue_index[dst]]-seq_pos[residue_index[src]]).clamp(-32, 32).to(x.dtype)/32
-    return Graph(index, dist, unit, torch.stack((same, sep, is_bond), dim=-1), types)
+    return Graph(index, dist, unit, torch.stack((same, sep, is_bond), dim=-1), types,
+                 node_cutoff[dst])
 
 
 def residue_graph(record: ProteinRecord, valid: Tensor, radius=12.0, max_neighbors=24):

@@ -4,7 +4,7 @@ from pathlib import Path
 from collections import defaultdict
 import torch
 from .checkpoint import load_checkpoint
-from .config import ModelConfig, TrainConfig
+from .config import model_config, train_config
 from .models.jepa import ProteinJEPA
 from .data.dataset import ManifestDataset
 from .data.records import random_crop
@@ -18,8 +18,8 @@ def evaluate(checkpoint_path, manifest, output, split='val', max_records=32, dev
         raise ValueError('Use a held-out split for evaluation.')
     torch.set_num_threads(2)
     payload=load_checkpoint(checkpoint_path)
-    cfg=ModelConfig(**payload['model_config'])
-    training=TrainConfig(**payload['train_config'])
+    cfg=model_config(payload['model_config'])
+    training=train_config(payload['train_config'])
     data=ManifestDataset(manifest,split=split,allow_observed_order=training.allow_observed_order)
     model=ProteinJEPA(cfg).to(device).eval()
     model.load_state_dict(payload['model'])
@@ -28,7 +28,9 @@ def evaluate(checkpoint_path, manifest, output, split='val', max_records=32, dev
     for i in range(min(max_records,len(data))):
         record=random_crop(data[i],training.crop_lengths,gen).to(device)
         for task in training.tasks:
-            observation=make_observation(record,task,training.mask_fraction,gen)
+            observation=make_observation(record,task,training.mask_fraction,gen,
+                                         training.mask_blocks,training.mask_mode,
+                                         training.mask_min_span)
             with torch.no_grad():
                 loss,info,_=model.task_loss(record,observation,training)
             if info['valid_targets']:

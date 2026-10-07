@@ -7,7 +7,7 @@ from protein_jepa.config import ModelConfig, TrainConfig
 from protein_jepa.models.fibers import Fiber, FiberDims
 from protein_jepa.models.effdock_blocks import (
     EffDockInteractionBlock, FiberDropout, FiberRMSNorm, ConditionalFiberNorm,
-    StableNormRescale, NormGate, gated_aggregate,
+    StableNormRescale, NormGate, gated_aggregate, EquivariantFFN, GatedFFN,
 )
 from protein_jepa.models.jepa import ProteinJEPA
 from protein_jepa.geometry.primitives import random_rotation, symmetric_traceless
@@ -27,7 +27,8 @@ def empty_graph():
                  torch.empty(0, 3), torch.empty(0, 3), torch.empty(0, dtype=torch.long))
 
 
-@pytest.mark.parametrize('factory', [FiberRMSNorm, NormGate, StableNormRescale])
+@pytest.mark.parametrize('factory', [FiberRMSNorm, NormGate, StableNormRescale,
+                                     EquivariantFFN, GatedFFN])
 def test_degree_operations_equivariant(factory):
     d = FiberDims(8, 4, 2)
     h, r = random_fiber(dims=d), random_rotation()
@@ -113,7 +114,9 @@ def test_cutoff_zero_edge_equals_absent_edge():
 
 
 @pytest.mark.parametrize('aggregation', ['soft', 'gate', 'degree'])
-def test_block_deep_backward_equivariance(aggregation):
+@pytest.mark.parametrize('extensions', [{}, dict(directional=True, ffn='bilinear',
+                                                adaptive_cutoff=True)])
+def test_block_deep_backward_equivariance(aggregation, extensions):
     d = FiberDims(8, 4, 2)
     h, r = random_fiber(6, d), random_rotation()
     x = torch.randn(6, 3)
@@ -121,7 +124,8 @@ def test_block_deep_backward_equivariance(aggregation):
     bonds = torch.empty(2, 0, dtype=torch.long)
     g = make_graph(x, ids, ids, bonds, node_kind=torch.full_like(ids, 2))
     layers = torch.nn.ModuleList(EffDockInteractionBlock(d, aggregation=aggregation,
-                                                        radial_hidden=24) for _ in range(8))
+                                                        radial_hidden=24, **extensions)
+                                 for _ in range(8))
     a, b = h, h.rotate(r)
     for layer in layers:
         a = layer(a, g)
@@ -139,19 +143,26 @@ def test_stage_wiring_and_all_ablation_switches(tiny_cfg, protein):
               enc.aa.atom_layers[0], enc.aa.res_layer]
     assert [x.stage for x in stages] == list(range(5))
     assert all(isinstance(x, EffDockInteractionBlock) for x in stages)
-    cfg = replace(cfg, effdock_conditioning=False, effdock_dual_radial=False,
-                  effdock_distance_decay=False, effdock_norm_rescale=False,
-                  effdock_smooth_cutoff=False, effdock_expansion=1)
-    model = ProteinJEPA(cfg)
-    out = model.online.encoder(protein, ('bb', 'aa'))
-    for view in out.values():
-        assert torch.isfinite(view.nodes.s).all()
-    assert not hasattr(model.online.encoder.bb.layers[0], 'radial_in')
+    assert not any(hasattr(x, 'stage_embedding') for x in stages)
+    for change in (dict(effdock_conditioning=False, effdock_dual_radial=False,
+                        effdock_distance_decay=False, effdock_norm_rescale=False,
+                        effdock_smooth_cutoff=False, effdock_expansion=1),
+                   dict(effdock_directional=True, effdock_ffn='bilinear',
+                        effdock_adaptive_cutoff=True, sc_context='spatial')):
+        model = ProteinJEPA(replace(cfg, **change))
+        out = model.online.encoder(protein, ('bb', 'aa'))
+        for view in out.values():
+            assert torch.isfinite(view.nodes.s).all()
+    assert isinstance(model.online.encoder.bb.layers[0].ffn, EquivariantFFN)
+    assert not hasattr(ProteinJEPA(replace(cfg, effdock_dual_radial=False)).online.encoder.bb.layers[0],
+                       'radial_in')
 
 
 @pytest.mark.parametrize('options', [dict(interaction='typo'), dict(effdock_aggregation='typo'),
     dict(effdock_expansion=0), dict(effdock_radial_hidden=0), dict(effdock_residual_scale=0),
-    dict(effdock_conditioning='false')])
+    dict(effdock_conditioning='false'), dict(effdock_ffn='typo'), dict(sc_context='typo'),
+    dict(effdock_adaptive_cutoff=1), dict(predictor_layers=0),
+    dict(effdock_adaptive_cutoff=True, effdock_aggregation='degree')])
 def test_invalid_config(options):
     with pytest.raises(ValueError):
         ModelConfig(**options)
@@ -172,7 +183,17 @@ def test_effdock_checkpoint_exact_resume_and_architecture_rejection(tiny_cfg, tm
         train(tiny_cfg, training, dataset, tmp_path/'bad', resume=tmp_path/'resume/last.pt')
 
 
-def test_old_v01_config_can_resume(tiny_cfg, tmp_path):
+def test_format1_checkpoint_rejected(tiny_cfg, tmp_path):
+    training = TrainConfig(steps=1, batch_size=1, crop_lengths=[10], threads=1)
+    train(tiny_cfg, training, SyntheticDataset(2, 12, 17), tmp_path/'r')
+    payload = load_checkpoint(tmp_path/'r/last.pt')
+    payload['format_version'] = 1
+    torch.save(payload, tmp_path/'old.pt')
+    with pytest.raises(ValueError, match='retrain'):
+        load_checkpoint(tmp_path/'old.pt')
+
+
+def test_resume_with_omitted_effdock_config_keys(tiny_cfg, tmp_path):
     training = TrainConfig(steps=2, batch_size=1, crop_lengths=[10], threads=1)
     dataset = SyntheticDataset(2, 12, 17)
     train(tiny_cfg, training, dataset, tmp_path/'r', stop_after=1)
@@ -182,3 +203,41 @@ def test_old_v01_config_can_resume(tiny_cfg, tmp_path):
                                if k != 'interaction' and not k.startswith('effdock_')}
     torch.save(payload, path)
     assert train(tiny_cfg, training, dataset, tmp_path/'r', resume=path)['steps'] == 2
+
+
+def test_bilinear_ffn_synthesizes_out_of_span_direction():
+    """Two orthogonal input directions can produce their cross product."""
+    d = FiberDims(4, 2, 1)
+    ffn = EquivariantFFN(d)
+    h = Fiber.zeros(1, d, torch.zeros(1))
+    h.v[0, 0] = torch.tensor([1., 0., 0.]); h.v[0, 1] = torch.tensor([0., 1., 0.])
+    out = ffn(h)
+    assert out.v[..., 2].abs().max() > 1e-4  # z is outside span{x, y}
+    gated = GatedFFN(d)(h)
+    assert gated.v[..., 2].abs().max() == 0
+
+
+@pytest.mark.parametrize('bonded', [False, True])
+def test_adaptive_cutoff_makes_topk_swap_continuous(bonded):
+    """Two neighbours exchanging the k-th rank change the output by O(delta),
+    including when one of them is an explicit bond that survives truncation."""
+    d = FiberDims(8, 4, 2)
+    torch.manual_seed(5)
+    h = random_fiber(4, d)
+    bonds = (torch.tensor([[2, 0], [0, 2]]) if bonded else torch.empty(2, 0, dtype=torch.long))
+    def run(delta, adaptive):
+        x = torch.tensor([[0., 0., 0.], [1., 0., 0.], [0., 2.-delta, 0.], [0., 0., 2.+delta]])
+        ids = torch.arange(4)
+        g = make_graph(x, ids, ids, bonds, radius=6.,
+                       max_neighbors=2, node_kind=torch.full_like(ids, 2))
+        block = EffDockInteractionBlock(d, cutoff=6., radial_hidden=24, adaptive_cutoff=adaptive)
+        block.load_state_dict(reference.state_dict())
+        return block(h, g)
+    reference = EffDockInteractionBlock(d, cutoff=6., radial_hidden=24, adaptive_cutoff=True)
+    for name, p in reference.named_parameters():
+        if 'scale' in name:
+            torch.nn.init.constant_(p, 1.)
+    gap = {a: (run(1e-4, a).s-run(-1e-4, a).s).abs().max().item() for a in (True, False)}
+    assert gap[True] < 1e-3
+    if not bonded:
+        assert gap[False] > 1e-3

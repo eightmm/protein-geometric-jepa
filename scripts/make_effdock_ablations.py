@@ -25,13 +25,31 @@ def main():
         'no_distance_decay': {'interaction': 'effdock', 'effdock_distance_decay': False},
         'no_smooth_cutoff': {'interaction': 'effdock', 'effdock_smooth_cutoff': False},
         'depth6': {'interaction': 'effdock', 'backbone_layers': 6},
+        # v0.3 opt-in encoder experiments, one at a time and all together.
+        'bilinear_ffn': {'interaction': 'effdock', 'effdock_ffn': 'bilinear'},
+        'directional_gates': {'interaction': 'effdock', 'effdock_directional': True},
+        'adaptive_cutoff': {'interaction': 'effdock', 'effdock_adaptive_cutoff': True},
+        'sc_spatial': {'interaction': 'effdock', 'sc_context': 'spatial'},
+        'all_extensions': {'interaction': 'effdock', 'effdock_ffn': 'bilinear',
+                           'effdock_directional': True, 'effdock_adaptive_cutoff': True,
+                           'sc_context': 'spatial'},
+        # v0.3 JEPA objective/predictor axes.
+        'predictor_depth1': {'interaction': 'effdock', 'predictor_layers': 1},
+    }
+    training_changes = {
+        'single_span_mask': {'mask_blocks': 1},
+        'constant_ema': {'ema_end': training.ema},
+        'with_covariance': {'covariance_weight': 0.005},
     }
     files = {}
-    for name, update in changes.items():
+    variants = [(name, update, {}) for name, update in changes.items()]
+    variants += [(name, {'interaction': 'effdock'}, update) for name, update in training_changes.items()]
+    for name, update, train_update in variants:
         for seed in dict.fromkeys(args.seeds):
             path = Path(args.output)/f'{name}_seed{seed}.yaml'
             files[path] = yaml.safe_dump({'model': asdict(replace(model, **update)),
-                                         'training': asdict(replace(training, seed=seed))},
+                                         'training': asdict(replace(training, seed=seed,
+                                                                    **train_update))},
                                         sort_keys=False)
     existing = [str(p) for p in files if p.exists()]
     if existing:

@@ -102,6 +102,19 @@ def test_cli_prepare_train_encode_and_evaluate(tmp_path,tiny_cfg):
         evaluate(checkpoint,manifest,tmp_path/'bad.json',max_records=0)
 
 
+@pytest.mark.parametrize('path',sorted((Path(__file__).resolve().parents[1]/'configs').glob('*.yaml')),
+                         ids=lambda p: p.name)
+def test_shipped_configs_load_and_build(path):
+    from dataclasses import replace
+    from protein_jepa.config import load_config
+    from protein_jepa.models.jepa import ProteinJEPA
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        model,_=load_config(path)
+    ProteinJEPA(replace(model,backend='reference'))
+
+
 @pytest.mark.parametrize('kwargs',[{'heads':0},{'radius_atom':0},{'dropout':1},{'atom_layers':0}])
 def test_invalid_model_config(kwargs):
     with pytest.raises(ValueError):

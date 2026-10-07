@@ -1,5 +1,7 @@
 # Actual CuEq operations through its PyTorch naive method. Install .[cueq].
 model:
+  predictor_layers: 2
+  atom_decoder_layers: 1
   backend: cueq-naive
   scalar: 16
   vector: 4
@@ -10,11 +12,11 @@ model:
   backbone_layers: 1
   aa_layers: 1
   internal_layers: 1
-  latent_scalar: 16
-  latent_vector: 4
-  latent_tensor: 2
-  circular_channels: 4
 training:
+  # 18-step smoke: a 0.996 teacher would barely move.
+  ema: 0.9
+  ema_end: 0.99
+  mask_min_span: 2
   steps: 18
   batch_size: 1
   crop_lengths: [16, 24]

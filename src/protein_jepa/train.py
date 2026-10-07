@@ -14,11 +14,17 @@ import torch
 from torch import distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from .models.jepa import ProteinJEPA
-from .config import ModelConfig
+from .config import model_config
 from .data.records import random_crop
 from .geometry.primitives import random_rotation
 from .objectives.tasks import TASKS, make_observation
 from .checkpoint import save_checkpoint, load_checkpoint, rng_state, restore_rng
+
+
+def ema_momentum(train_cfg, step):
+    """I-JEPA-style linear teacher momentum schedule from ema to ema_end."""
+    progress = step/max(train_cfg.steps-1, 1)
+    return train_cfg.ema+(train_cfg.ema_end-train_cfg.ema)*min(progress, 1.0)
 
 
 def train(model_cfg, train_cfg, dataset, output, resume=None, stop_after=None):
@@ -71,7 +77,7 @@ def train(model_cfg, train_cfg, dataset, output, resume=None, stop_after=None):
     payload = None
     if resume:
         payload = load_checkpoint(resume)
-        if asdict(ModelConfig(**payload['model_config'])) != asdict(model_cfg):
+        if asdict(model_config(payload['model_config'])) != asdict(model_cfg):
             raise ValueError("Resume model configuration differs (including backend).")
         if payload['fingerprint'] != dataset.fingerprint or payload['world_size'] != world:
             raise ValueError("Resume requires the same dataset manifest and world size.")
@@ -98,10 +104,13 @@ def train(model_cfg, train_cfg, dataset, output, resume=None, stop_after=None):
     last_loss = None
     for step in range(first, end):
         batch = []
-        # Cycle tasks deterministically so EVERY target encoder also receives
-        # online/context updates. Randomize samples, masks and crops independently.
-        task = train_cfg.tasks[step % len(train_cfg.tasks)]
-        for _ in range(train_cfg.batch_size):
+        # Cycle tasks per SAMPLE so every target encoder also receives
+        # online/context updates and one step mixes objectives instead of
+        # alternating them. Samples, masks and crops are randomized independently.
+        tasks = []
+        for b in range(train_cfg.batch_size):
+            task = train_cfg.tasks[(step*train_cfg.batch_size+b) % len(train_cfg.tasks)]
+            tasks.append(task)
             idx = int(torch.randint(len(dataset), (), generator=sampler))
             record = random_crop(dataset[idx], train_cfg.crop_lengths, sampler).to(device)
             # Apply the SAME rigid transform to the source record from which
@@ -110,7 +119,9 @@ def train(model_cfg, train_cfg, dataset, output, resume=None, stop_after=None):
                 rotation = random_rotation(sampler).to(device)
                 translation = (torch.randn(3, generator=sampler)*train_cfg.translation_std).to(device)
                 record = record.rigid_transform(rotation, translation)
-            observation = make_observation(record, task, train_cfg.mask_fraction, sampler)
+            observation = make_observation(record, task, train_cfg.mask_fraction, sampler,
+                                           train_cfg.mask_blocks, train_cfg.mask_mode,
+                                           train_cfg.mask_min_span)
             batch.append((record, observation))
         optimizer.zero_grad(set_to_none=True)
         loss, details = wrapped(batch, train_cfg)
@@ -123,19 +134,20 @@ def train(model_cfg, train_cfg, dataset, output, resume=None, stop_after=None):
         gradnorm = torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.grad_clip, error_if_nonfinite=True)
         optimizer.step()
         scheduler.step()
-        model.update_teacher(train_cfg.ema)
+        model.update_teacher(ema_momentum(train_cfg, step))
         scalar_loss = loss.detach().clone()
         if world > 1:
             dist.all_reduce(scalar_loss)
             scalar_loss /= world
         last_loss = float(scalar_loss)
         if rank == 0 and (step % train_cfg.log_every == 0 or step == end-1):
-            row = {'step': step+1, 'loss': last_loss, 'task': task,
+            row = {'step': step+1, 'loss': last_loss, 'tasks': tasks,
+                   'ema': ema_momentum(train_cfg, step),
                    'grad_norm': float(gradnorm), 'lr': scheduler.get_last_lr()[0],
                    'elapsed_seconds': time.perf_counter()-start_time, **details}
             with (out/'metrics.jsonl').open('a') as stream:
                 stream.write(json.dumps(row)+'\n')
-            print(json.dumps({k: row[k] for k in ('step', 'task', 'loss', 'grad_norm')}), flush=True)
+            print(json.dumps({k: row[k] for k in ('step', 'tasks', 'loss', 'grad_norm')}), flush=True)
         if (step+1) % train_cfg.save_every == 0 or step == end-1:
             local_state = rng_state(sampler)
             rank_states = [None]*world

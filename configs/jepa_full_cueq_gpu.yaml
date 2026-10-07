@@ -1,0 +1,26 @@
+# v0.3 opt-in experiment: every encoder extension on top of effdock_cueq_gpu.
+# Unvalidated hypotheses; compare against effdock_cueq_gpu.yaml at equal steps.
+model:
+  backend: cueq-cuda
+  interaction: effdock
+  effdock_radial_hidden: 96
+  effdock_expansion: 2
+  effdock_residual_scale: 0.1
+  effdock_aggregation: soft
+  effdock_conditioning: true
+  effdock_dual_radial: true
+  effdock_distance_decay: true
+  effdock_norm_rescale: true
+  effdock_smooth_cutoff: true
+  effdock_directional: true
+  effdock_ffn: bilinear
+  effdock_adaptive_cutoff: true
+  sc_context: spatial
+training:
+  steps: 10000
+  batch_size: 2
+  crop_lengths:
+  - 128
+  - 256
+  device: cuda
+  allow_observed_order: false

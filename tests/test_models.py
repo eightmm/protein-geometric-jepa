@@ -5,7 +5,7 @@ from conftest import assert_fiber_close
 from protein_jepa.geometry.primitives import random_rotation, symmetric_traceless, normalize
 from protein_jepa.models.fibers import Fiber, FiberDims, GlobalReadout
 from protein_jepa.models.equivariant import CartesianMessage, EquivariantBlock
-from protein_jepa.models.predictors import LatentProjector
+from protein_jepa.models.predictors import make_target, topology_atoms
 from protein_jepa.data.synthetic import sequence_record
 from protein_jepa.objectives.tasks import make_observation
 
@@ -59,9 +59,66 @@ def test_hidden_target_mutation_cannot_change_context_or_prediction(model,protei
         for v in a:
             assert_fiber_close(a[v].nodes,b[v].nodes,atol=0,rtol=0)
             assert_fiber_close(a[v].global_state,b[v].global_state,atol=0,rtol=0)
-        pa=model.predictor(a,protein.seq_pos,obs.spec.target,protein.seq_pos)
-        pb=model.predictor(b,protein.seq_pos,obs.spec.target,protein.seq_pos)
-    assert_fiber_close(pa.fiber,pb.fiber,atol=0,rtol=0)
+        query=torch.where(obs.target_residues)[0]
+        atoms=topology_atoms(protein.seq,obs.seq_visible,query,task=='sc_infill') if obs.spec.atom_loss else (None,None)
+        pa=model.predictor(a,protein.seq_pos,obs.spec.target,query,*atoms)
+        pb=model.predictor(b,protein.seq_pos,obs.spec.target,query,*atoms)
+    assert_fiber_close(pa.nodes,pb.nodes,atol=0,rtol=0)
+    assert_fiber_close(pa.global_state,pb.global_state,atol=0,rtol=0)
+    if obs.spec.atom_loss:
+        assert_fiber_close(pa.atoms,pb.atoms,atol=0,rtol=0)
+
+
+@pytest.mark.parametrize('task',['sc_infill','aa_infill'])
+def test_hidden_atom_presence_never_shapes_queries_or_predictions(model,protein,task):
+    """Deleting a hidden atom from the record must not change any prediction."""
+    obs=make_observation(protein,task,.3,torch.Generator().manual_seed(2))
+    hidden=~obs.atom_visible & protein.present
+    hidden[:,:4]&=task=='aa_infill'
+    r,a=torch.where(hidden)
+    present=protein.present.clone(); present[r[0],a[0]]=False
+    changed=replace(protein,present=present)
+    with torch.no_grad():
+        outs=[]
+        for rec in (protein,changed):
+            o=make_observation(rec,task,.3,torch.Generator().manual_seed(2))
+            ctx=model.online.encoder(rec,o.spec.context,o.atom_visible,o.seq_visible)
+            query=torch.where(o.target_residues)[0]
+            atoms=topology_atoms(rec.seq,o.seq_visible,query,task=='sc_infill')
+            outs.append((atoms,model.predictor(ctx,rec.seq_pos,o.spec.target,query,*atoms)))
+    (qa,pa),(qb,pb)=outs
+    assert all(torch.equal(x,y) for x,y in zip(qa,qb))
+    for x,y in ((pa.nodes,pb.nodes),(pa.global_state,pb.global_state),(pa.atoms,pb.atoms)):
+        assert_fiber_close(x,y,atol=0,rtol=0)
+
+
+def test_glycine_only_sidechain_infill_has_no_atom_queries(model,protein):
+    from protein_jepa.config import TrainConfig
+    gly=replace(protein,seq=torch.full_like(protein.seq,7))
+    present=gly.present.clone(); present[:,4:]=False; gly=replace(gly,present=present)
+    obs=make_observation(gly,'sc_infill',.3,torch.Generator().manual_seed(1))
+    model.train()
+    loss,info=model([(gly,obs)],TrainConfig())
+    loss.backward()
+    assert torch.isfinite(loss)
+
+
+def test_global_target_uses_crop_reference_scale(tiny_cfg):
+    from protein_jepa.models.predictors import reference_rms
+    d=tiny_cfg.dims
+    nodes=Fiber(torch.randn(5,d.scalar),torch.randn(5,d.vector,3),symmetric_traceless(torch.randn(5,d.tensor,3,3)))
+    glob=Fiber(torch.randn(1,d.scalar),torch.randn(1,d.vector,3)*1e-5,torch.zeros(1,d.tensor,3,3))
+    z=make_target(glob,None,reference=reference_rms(nodes,torch.ones(5,dtype=torch.bool)))
+    assert z.v.norm()<1e-2 and z.s[0,-2]<-1
+
+
+def test_topology_atoms_follow_visible_sequence_only(protein):
+    query=torch.tensor([0,1])
+    visible=torch.ones(len(protein),dtype=torch.bool); visible[1]=False
+    r,a=topology_atoms(protein.seq,visible,query,False)
+    assert set(a[r==1].tolist())=={0,1,2,3}
+    r,a=topology_atoms(protein.seq,visible,query,True)
+    assert not bool((r==1).any()) and bool((a>=4).all())
 
 
 def test_equivariant_predictor_without_target_coordinates(model,protein):
@@ -70,17 +127,22 @@ def test_equivariant_predictor_without_target_coordinates(model,protein):
     with torch.no_grad():
         a=model.online.encoder(protein,obs.spec.context,obs.atom_visible,obs.seq_visible)
         b=model.online.encoder(moved,obs.spec.context,obs.atom_visible,obs.seq_visible)
-        pa=model.predictor(a,protein.seq_pos,'aa',protein.seq_pos)
-        pb=model.predictor(b,protein.seq_pos,'aa',protein.seq_pos)
-    assert_fiber_close(pa.fiber.rotate(r),pb.fiber,atol=5e-5,rtol=5e-5)
+        query=torch.arange(len(protein))
+        atoms=topology_atoms(protein.seq,obs.seq_visible,query[obs.target_residues],False)
+        pa=model.predictor(a,protein.seq_pos,'aa',query,*atoms)
+        pb=model.predictor(b,protein.seq_pos,'aa',query,*atoms)
+    for x,y in ((pa.nodes,pb.nodes),(pa.global_state,pb.global_state),(pa.atoms,pb.atoms)):
+        assert_fiber_close(x.rotate(r),y,atol=5e-5,rtol=5e-5)
+    assert pa.nodes.v.abs().sum()>0 and pa.atoms.t.abs().sum()>0
 
 
 def test_sequence_only_predictor_has_no_fixed_world_vector(model,protein):
     with torch.no_grad():
         a=model.online.encoder(protein,('seq',))
-        z=model.predictor(a,protein.seq_pos,'bb',protein.seq_pos)
-    assert torch.count_nonzero(z.fiber.v)==0
-    assert torch.count_nonzero(z.fiber.t)==0
+        z=model.predictor(a,protein.seq_pos,'bb',torch.arange(len(protein)))
+    for h in (z.nodes,z.global_state):
+        assert torch.count_nonzero(h.v)==0
+        assert torch.count_nonzero(h.t)==0
 
 
 def test_empty_structure_view_is_finite(model):
@@ -118,10 +180,34 @@ def test_global_readout_zero_geometry_stays_zero(tiny_cfg):
     assert out.v.count_nonzero()==0 and out.t.count_nonzero()==0
 
 
-def test_learned_circles_unit_norm(tiny_cfg):
-    h=Fiber.zeros(5,tiny_cfg.dims,torch.zeros(1)); h.s=torch.randn(5,tiny_cfg.scalar)
-    z=LatentProjector(tiny_cfg)(h)
-    torch.testing.assert_close(z.circular.norm(dim=-1),torch.ones(5,tiny_cfg.circular_channels))
+def test_target_normalization_contract(tiny_cfg):
+    d=tiny_cfg.dims
+    h=Fiber(torch.randn(6,d.scalar),torch.randn(6,d.vector,3),symmetric_traceless(torch.randn(6,d.tensor,3,3)))
+    h.v[0]*=1e-5; h.t[0]*=1e-5
+    r=random_rotation()
+    z=make_target(h)
+    assert_fiber_close(z.rotate(r),make_target(h.rotate(r)),atol=1e-5,rtol=1e-5)
+    # Near-zero tokens are damped by the soft floor, not inflated to unit RMS.
+    assert z.v[0].norm()<1e-2 and z.v[1:].square().sum(-1).mean()>1
+    # Two invariant log-magnitude scalars follow the layer-normed scalars.
+    assert z.s.shape[-1]==d.scalar+2 and z.s[0,-2]<z.s[1:,-2].min()
+    torch.testing.assert_close(z.s[:,:d.scalar].mean(-1),torch.zeros(6),atol=1e-5,rtol=0)
+    zero=Fiber.zeros(3,d,torch.zeros(1)); zero.s=torch.randn(3,d.scalar)
+    out=make_target(zero)
+    assert out.v.count_nonzero()==0 and out.t.count_nonzero()==0 and torch.isfinite(out.s).all()
+
+
+def test_sidechain_context_option(tiny_cfg,protein):
+    from protein_jepa.models.jepa import ProteinJEPA
+    x=protein.xyz.clone(); x[7,4:]+=torch.tensor([.4,-.3,.2])
+    changed=replace(protein,xyz=x)
+    for context,expect in (('local',False),('spatial',True)):
+        m=ProteinJEPA(replace(tiny_cfg,sc_context=context)).eval()
+        with torch.no_grad():
+            a=m.online.encoder(protein,('sc',))['sc'].nodes.s
+            b=m.online.encoder(changed,('sc',))['sc'].nodes.s
+        other=torch.cat(((a-b)[:7],(a-b)[8:])).abs().max()
+        assert bool(other>0)==expect, context
 
 
 def test_tensor_channels_symmetric_traceless(model,protein):

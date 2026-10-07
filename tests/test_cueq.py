@@ -24,13 +24,16 @@ def test_cueq_bridge_and_cpu_equivariance():
 
 @pytest.mark.cueq
 @pytest.mark.skipif(not available,reason='CuEq packages are not installed')
-@pytest.mark.parametrize('interaction', ['baseline', 'effdock'])
+@pytest.mark.parametrize('interaction', ['baseline', 'effdock', 'effdock-full'])
 def test_cueq_naive_end_to_end(tiny_cfg,protein,interaction):
     from dataclasses import replace
     from protein_jepa.models.jepa import ProteinJEPA
     from protein_jepa.config import TrainConfig
     from protein_jepa.objectives.tasks import make_observation
-    model=ProteinJEPA(replace(tiny_cfg,backend='cueq-naive',interaction=interaction,effdock_radial_hidden=24))
+    extra=dict(effdock_ffn='bilinear',effdock_directional=True,effdock_adaptive_cutoff=True,
+               sc_context='spatial') if interaction=='effdock-full' else {}
+    model=ProteinJEPA(replace(tiny_cfg,backend='cueq-naive',interaction=interaction.split('-')[0],
+                              effdock_radial_hidden=24,**extra))
     obs=make_observation(protein,'aa_infill',.3,torch.Generator().manual_seed(1))
     loss,_=model([(protein,obs)],TrainConfig()); loss.backward()
     assert torch.isfinite(loss)
@@ -74,6 +77,7 @@ def test_effdock_cueq_all_tasks_gradients_and_mask_isolation(tiny_cfg, protein):
     from protein_jepa.models.jepa import ProteinJEPA
     from protein_jepa.config import TrainConfig
     from protein_jepa.objectives.tasks import make_observation, TASKS
+    from protein_jepa.models.predictors import topology_atoms
     model = ProteinJEPA(replace(tiny_cfg, backend='cueq-naive', interaction='effdock',
                                 effdock_radial_hidden=24))
     for task in TASKS:
@@ -93,6 +97,13 @@ def test_effdock_cueq_all_tasks_gradients_and_mask_isolation(tiny_cfg, protein):
             a = model.online.encoder(protein, obs.spec.context, obs.atom_visible, obs.seq_visible)
             b = model.online.encoder(replace(protein, xyz=x), obs.spec.context,
                                      obs.atom_visible, obs.seq_visible)
-            pa = model.predictor(a, protein.seq_pos, obs.spec.target, protein.seq_pos)
-            pb = model.predictor(b, protein.seq_pos, obs.spec.target, protein.seq_pos)
-        assert_fiber_close(pa.fiber, pb.fiber, atol=0, rtol=0)
+            query = torch.where(obs.target_residues)[0]
+            atoms = (topology_atoms(protein.seq, obs.seq_visible, query, task == 'sc_infill')
+                     if obs.spec.atom_loss else (None, None))
+            pa = model.predictor(a, protein.seq_pos, obs.spec.target, query, *atoms)
+            pb = model.predictor(b, protein.seq_pos, obs.spec.target, query, *atoms)
+        pairs = [(pa.nodes, pb.nodes), (pa.global_state, pb.global_state)]
+        if obs.spec.atom_loss:
+            pairs.append((pa.atoms, pb.atoms))
+        for x, y in pairs:
+            assert_fiber_close(x, y, atol=0, rtol=0)

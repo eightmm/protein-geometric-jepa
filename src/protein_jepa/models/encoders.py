@@ -9,7 +9,7 @@ from ..data.records import ProteinRecord
 from ..data.graphs import atom_bonds, make_graph, residue_graph, BB_ATOM, SC_ATOM
 from ..geometry.features import backbone_features, chi_features
 from ..geometry.primitives import normalize
-from .fibers import (Fiber, FiberDims, FiberLinear, FiberActivation, DirectionSeed,
+from .fibers import (Fiber, FiberDims, FiberLinear, DirectionSeed,
                      GlobalReadout, scatter_fiber, cat_fibers)
 from .equivariant import EquivariantBlock
 
@@ -25,7 +25,8 @@ def interaction_block(cfg: ModelConfig, stage: int, cutoff: float):
         residual_scale=cfg.effdock_residual_scale, aggregation=cfg.effdock_aggregation,
         conditional=cfg.effdock_conditioning, dual_radial=cfg.effdock_dual_radial,
         distance_decay=cfg.effdock_distance_decay, norm_rescale=cfg.effdock_norm_rescale,
-        smooth_cutoff=cfg.effdock_smooth_cutoff,
+        smooth_cutoff=cfg.effdock_smooth_cutoff, directional=cfg.effdock_directional,
+        ffn=cfg.effdock_ffn, adaptive_cutoff=cfg.effdock_adaptive_cutoff,
     )
 
 
@@ -144,8 +145,11 @@ class AtomStem(nn.Module):
             s = self.embedding(token)+self.distance_embed(rel.norm(dim=-1, keepdim=True)/4)
             atom = self.seed(s, unit[:, None])
             bonds = atom_bonds(record, ri, ai, self.backbone_only)
+            # BB atoms stay residue-local (the residue trunk adds context). SC
+            # atoms may see other SC atoms: packing is SC-only information.
+            local = self.backbone_only or self.cfg.sc_context == "local"
             graph = make_graph(x, ri, record.seq_pos, bonds, self.cfg.radius_atom,
-                               self.cfg.max_neighbors, local_only=True,
+                               self.cfg.max_neighbors, local_only=local,
                                node_kind=torch.full_like(ri, BB_ATOM if self.backbone_only else SC_ATOM))
             for layer in self.layers:
                 atom = layer(atom, graph)
@@ -200,7 +204,6 @@ class AllAtomFusion(nn.Module):
         self.atom_layers = nn.ModuleList(interaction_block(cfg, 3, cfg.radius_atom) for _ in range(cfg.aa_layers))
         self.res_layer = interaction_block(cfg, 4, cfg.radius_residue)
         self.feedback = FiberLinear(cfg.dims, cfg.dims)
-        self.activation = FiberActivation(cfg.dims)
         self.readout = GlobalReadout(cfg.dims)
 
     def forward(self, record, visible, bb: EncodedView, sc: EncodedView):
@@ -220,7 +223,9 @@ class AllAtomFusion(nn.Module):
         ids, graph = residue_graph(record, valid, self.cfg.radius_residue, self.cfg.max_neighbors)
         h = self.res_layer(nodes.index(ids), graph)
         nodes = scatter_fiber(h, ids, len(record), mean=False)
-        atom = self.activation(atom+self.feedback(nodes.index(ri)))
+        # Atom output = state after the inter-residue atom layers, which also
+        # feeds the residue output. A post-hoc residue->atom map would exist
+        # only on the teacher target path and therefore never be trained.
         return EncodedView(nodes, valid, self.readout(nodes, valid), bool(valid.any()), atom, ri, ai)
 
 
