@@ -58,6 +58,17 @@ python scripts/validate_effdock.py --config configs/effdock_smoke.yaml \
 
 The validation script chooses the real GPU for `cueq-cuda`, synchronizes timing, records peak allocated GPU memory, and fails on nonfinite loss/gradient. It never substitutes the analytic reference. Start with FP32; AMP and fused-kernel compatibility require a separate validation. The CUDA tests cover end-to-end AA-infill backward, not a complete multi-GPU throughput benchmark.
 
+Verified combination on a Blackwell GPU (compute capability 12.0): `torch 2.11.0+cu128` with `cuequivariance`, `cuequivariance-torch` and `cuequivariance-ops-torch-cu12` 0.9.0. See [JEPA_V030_KO.md](JEPA_V030_KO.md) §6c.
+
+### Overfit check before long runs
+
+```bash
+protein-jepa overfit --config configs/effdock_smoke.yaml --device cuda \
+  --records 1CRN.cif 1UBQ.cif --chain A --steps 1200 --output runs/overfit.json
+```
+
+Pass criterion: the loss falls and `node_top1` rises well above `chance`. A falling loss with chance-level retrieval means mean prediction or collapse, not learning.
+
 ## 4. Real corpus pretraining
 
 Prepare canonical sequence-aligned records and a cluster-disjoint manifest as described in [DATA.md](DATA.md). Do not split crops from the same protein across train and validation. Crop lengths are 128/256 in the full presets.

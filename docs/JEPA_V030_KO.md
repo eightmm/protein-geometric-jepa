@@ -1,5 +1,7 @@
 # JEPA v0.3: target·predictor 결함 수정과 opt-in encoder 실험
 
+> **v0.4에서 바뀐 결정**: v0.3은 학습되지 않던 projector를 고치지 않고 아예 제거했습니다. 이 때문에 원래 합의한 typed latent(learned circle 포함)가 사라졌습니다. v0.4는 head를 encoder 뒤로 옮겨, 학습되는 typed head로 복원했습니다. covariance 기본값도 다시 켰습니다. 자세한 내용은 [TYPED_LATENT_V040_KO.md](TYPED_LATENT_V040_KO.md)를 보십시오.
+
 v0.3은 v0.2를 실행해 확인한 개념 결함을 고치는 릴리스입니다. JEPA의 기본 계약도 다시 맞췄습니다. 그 계약은 다음 셋입니다.
 
 - Teacher는 online encoder의 EMA입니다.
@@ -39,7 +41,8 @@ v0.3은 v0.2를 실행해 확인한 개념 결함을 고치는 릴리스입니�
 ## 3. Target 정의
 
 ```text
-scalar: LayerNorm(s) ⊕ log((r1+τ1)/(mean r1+τ1)) ⊕ log((r2+τ2)/(mean r2+τ2))
+scalar(node/atom): crop 안 channel별 instance norm ⊕ log((r1+τ1)/(mean r1+τ1)) ⊕ log((r2+τ2)/(mean r2+τ2))
+scalar(global): LayerNorm(s) ⊕ 같은 log 크기 두 개
 vector: v / sqrt(r1² + τ1²)          r1² = mean_c |v_c|²/3
 tensor: T / sqrt(r2² + τ2²)          r2² = mean_c |T_c|²_F/5
 τℓ = target_floor(0.1) × sample 안 valid token의 평균 rℓ
@@ -103,6 +106,22 @@ Variance floor는 정규화하기 전의 online context scalar에 적용합니�
 - 받아들이지 않은 지적은 하나입니다. 관측 atom이 없을 때 atom decoder를 건너뛰자는 제안입니다. 그렇게 하면 query 실행 여부가 teacher의 관측 여부에 좌우되어 정보 경계가 약해집니다.
 
 각 결함에는 회귀 테스트를 붙였습니다. 수정을 되돌리면 실패하는 것도 확인했습니다. 고친 diff로 Codex gate를 다시 실행하자 새 결함 두 가지가 나왔습니다. 하나는 resume 경로가 저장된 training config를 검사 없이 비교한 문제입니다. 다른 하나는 full preset을 기준으로 ablation을 생성하면 `degree`와 적응 cutoff가 충돌한 문제입니다. 두 가지를 고친 뒤 세 번째 gate에서 **pass**(confidence 0.87)를 받았습니다. 남은 쟁점은 thread `jepa-v030-plan`에 기록했습니다.
+
+## 6b. Overfit 진단에서 찾은 결함 (v0.3.1)
+
+`protein-jepa overfit`은 고정된 작은 세트를 반복 학습합니다. loss와 함께 **centred retrieval**도 측정합니다. 이는 각 masked residue의 예측이 다른 residue가 아닌 자기 target과 가장 가까운 비율입니다. 첫 실행에서 loss는 초기의 21%까지 떨어졌지만 retrieval은 우연 수준이었습니다. 원인을 가르는 probe를 돌려 두 가지를 확인했습니다.
+
+1. **Target에 residue별 정보가 거의 없었습니다.** 학습 전 teacher target에서 residue별 분산의 비율을 쟀습니다. BB는 실제 단백질(1UBQ)에서도 약 1.2%였습니다. seq는 62%, internal은 28%였습니다. 그래서 token별 LayerNorm target으로는 평균만 예측해도 loss가 거의 다 줄었습니다. → scalar target을 crop 안 channel별 instance norm으로 바꿨습니다. 이는 data2vec이 쓰는 방식입니다.
+2. **Mask query들이 서로 같은 출력을 냈습니다.** Relative bias가 0으로 초기화되어 있었기 때문입니다. → ALiBi 초기화로 바꿨습니다.
+
+고정된 teacher와 한 pair로 외우게 하는 probe(GPU, 1500 step)를 돌렸습니다. `bb_infill`, `seq_to_bb`, `aa_infill` 세 task 모두 retrieval **1.0**에 도달했습니다. Node loss는 3.4에서 0.003~0.008로 떨어졌습니다. CI에는 `test_overfit_fits_residue_specific_targets`가 들어 있습니다. 이 테스트는 loss가 절반 아래로 떨어지고 retrieval이 우연 수준의 2배를 넘어야 통과합니다.
+
+## 6c. CuEq CUDA gate
+
+Blackwell GPU(RTX PRO 6000, compute capability 12.0)에서 다음 조합을 썼습니다: torch 2.11.0+cu128, `cuequivariance`/`cuequivariance-torch`/`cuequivariance-ops-torch-cu12` 0.9.0.
+- `tests/test_cueq.py`는 **10 passed**였습니다. CUDA 전용 2개도 처음으로 실행되었습니다.
+- `scripts/validate_effdock.py --backend cueq-cuda`로 32/128/256 residue × 9 task × 3 variant, 총 81회를 돌렸고 모두 finite였습니다.
+- 이 과정에서 결함 하나를 고쳤습니다. CUDA ops wheel이 설치되어 있으면 `mul_ir` layout 변환 kernel이 CUDA에만 등록되어 있어서 CPU 경로가 실패했습니다. 이제 `ir_mul` layout을 써서 변환 자체가 필요 없습니다.
 
 ## 7. 검증 증거
 

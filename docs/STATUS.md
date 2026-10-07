@@ -1,4 +1,9 @@
-# Implementation status — v0.3.0
+# Implementation status — v0.4.0
+
+## v0.4.0 (typed latents, as originally agreed)
+
+Per-view learned typed latent heads sit after the encoders and are EMA-tracked with them: semantic scalars, l=1/l=2 irreps, learned circles (S^1), and opt-in S^2 directions / SO(3) frames. The predictor reads only the typed context latents, so every head weight that shapes a teacher target is trained by the prediction loss (verified with regularizers off). Per-kind losses; a sem variance+covariance and a per-channel circle floor; heat-kernel MMD (torus/sphere) and an all-Euclidean baseline as ablations. Rigid augmentation is off by default (measured no-op for this exactly equivariant model). The CuEq backend uses the ir_mul layout, so CPU paths work when the CUDA ops wheel is installed; actual CuEq CUDA tests pass on a Blackwell GPU. A 22-protein stochastic overfit (random 128/256 crops, fresh masks, task mixing, EMA) reaches 6.8x-chance centred retrieval with effective rank 44; without the covariance term rank collapses to 3. Checkpoint format 3. Details: [TYPED_LATENT_V040_KO.md](TYPED_LATENT_V040_KO.md), [reports/v040](../reports/v040/).
+
 
 This is an executable research implementation, not a pretrained protein model or a docking model.
 
@@ -6,7 +11,7 @@ This is an executable research implementation, not a pretrained protein model or
 
 v0.3 fixes defects found by executing v0.2: JEPA targets were a fixed random projection for l>0 (untrained projectors), the AA atom target path contained an untrained activation, the predictor was one cross-attention layer whose l>0 output could not leave the span of context vectors, and atom queries were built from observed teacher atoms. Targets are now normalized teacher-encoder states, the predictor is a two-stage equivariant transformer with topology-derived atom queries, masks are exact-size multi-block spans, tasks mix per sample, and EMA follows a schedule. The reference message now has the full CG path set. Encoder extensions (`sc_context: spatial`, `effdock_directional`, `effdock_ffn: bilinear`, `effdock_adaptive_cutoff`) are implemented as opt-in experiments. **Checkpoints from v0.1/v0.2 are rejected (format 2).** Details, council record and evidence: [JEPA_V030_KO.md](JEPA_V030_KO.md), [reports/v030](../reports/v030/).
 
-Verified for v0.3 on CPU: 171 tests pass and 2 CUDA tests skip; actual CuEq 0.9.0 CPU tests (8) execute; four 18-step smoke demos, 2-process Gloo DDP, and 128/256-residue forward/backward for baseline/effdock/effdock-full pass. Not verified: CUDA/NCCL, real-corpus training, and whether representation quality improved (requires the ablation grid and frozen probes).
+Verified for v0.3 on CPU (historical): 171 tests pass and 2 CUDA tests skip; actual CuEq 0.9.0 CPU tests (8) execute; four 18-step smoke demos, 2-process Gloo DDP, and 128/256-residue forward/backward for baseline/effdock/effdock-full pass. Not verified: CUDA/NCCL, real-corpus training, and whether representation quality improved (requires the ablation grid and frozen probes).
 
 The sections below describe the v0.2 interaction release and remain accurate unless superseded above.
 

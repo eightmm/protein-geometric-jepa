@@ -32,6 +32,8 @@ Task schedule은 기본적으로 순환형이다. 모든 view가 context에도 �
 
 목표가 충분히 예측 가능한지도 확인한다. 특히 learned latent가 상수에 가까워지면 loss가 작아도 유용한 representation이 아닐 수 있다. Frozen probes, retrieval, residue/atom downstream을 함께 평가해야 한다.
 
+`node_top1`은 masked residue의 예측이 자기 target을 다른 residue의 target보다 가깝게 맞힌 비율입니다(centred cosine). `node_chance`는 우연 수준입니다. `protein-jepa overfit`은 작은 고정 세트에서 이 두 지표와 loss를 함께 보여 줍니다.
+
 ## 4. Resume
 
 ```bash
@@ -86,4 +88,4 @@ The checkpoint fingerprint hashes the manifest text, not all NPZ bytes. Do not m
 
 ## Rigid augmentation
 
-`rigid_augmentation: true` applies a shared proper rotation and translation to the parent crop before teacher/student view construction. `translation_std: 1.0` is in Angstrom. The same saved sampler RNG drives crop, rigid augmentation, and masks, so the exact-resume test covers their random state. No reflection augmentation or independent teacher/student rotation is used.
+`rigid_augmentation` defaults to **false** since v0.4: the structure path, typed latent heads and every loss/regularizer are exactly SO(3)-equivariant or invariant and use only relative geometry, so a shared rigid transform changes loss and gradients only at float precision (measured on 1UBQ over all nine tasks: relative loss difference ≤1.8e-7, gradient ≤3.5e-5, reference CPU and CuEq CUDA). When enabled, it applies a shared proper rotation and translation to the parent crop before teacher/student view construction. `translation_std: 1.0` is in Angstrom. The same saved sampler RNG drives crop, rigid augmentation, and masks, so the exact-resume test covers their random state. No reflection augmentation or independent teacher/student rotation is used.

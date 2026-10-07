@@ -1,0 +1,12 @@
+{
+  "python": "3.12.12",
+  "torch": "2.11.0+cu128",
+  "cuda": "12.8",
+  "gpu": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+  "capability": [
+    12,
+    0
+  ],
+  "cuequivariance": "0.9.0",
+  "cuequivariance-ops-torch-cu12": "0.9.0"
+}

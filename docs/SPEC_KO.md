@@ -132,7 +132,7 @@ Frame을 `[vector_channel,xyz]`로 넣을 때 `R_i.T`를 사용한다. `[3,3]`�
 
 World vector와 local-frame coordinate는 다른 type이다. `R_i.T @ (x_j-x_i)`는 전역 회전에 불변인 local coordinate이고, `(x_j-x_i)`는 회전하는 vector다. v0.1 GNN의 기본 edge는 world displacement/direction이며, local-frame edge feature를 별도 irrep vector로 잘못 추가하지 않는다.
 
-학습 기본값 `rigid_augmentation: true`는 parent crop에 proper rotation과 translation을 적용한다. Teacher와 student는 같은 변환을 공유한다. `translation_std`는 Å 단위이며 기본값은 1이다. Independent student/teacher rotation 및 사후 frame alignment는 v0.1 기본 task에 포함하지 않는다.
+v0.4부터 `rigid_augmentation` 기본값은 false다. 구조 경로, typed head, 모든 loss와 regularizer가 정확히 SO(3) 등변 또는 불변이고 상대 기하만 쓰기 때문이다. 공통 강체 변환은 loss와 gradient를 부동소수점 수준으로만 바꾼다. 1UBQ에서 9개 task를 측정한 결과, 상대 차이는 loss 1.8e-7 이하, gradient 3.5e-5 이하였다(reference CPU, CuEq CUDA 모두). 켜면 parent crop에 proper rotation과 translation을 적용한다. Teacher와 student는 같은 변환을 공유한다. `translation_std`는 Å 단위이며 기본값은 1이다. Independent student/teacher rotation 및 사후 frame alignment는 v0.1 기본 task에 포함하지 않는다.
 
 Reflection은 augmentation에 넣지 않는다. Reference block에는 cross product가 있으며 SO(3) 계약이다. O(3)로 확장하려면 polar/axial parity를 분리해야 한다.
 
@@ -282,7 +282,7 @@ I-JEPA predictor처럼 context token과 mask token이 함께 attention한다. �
 1. **Joint stack** (`predictor_layers`): context view의 visible node/global state와 target view의 node/global mask token을 함께 처리한다. Mask token은 학습된 scalar, target view type, level, role, sequence position만 가진다. l>0 성분은 0이다.
 2. **Atom decoder** (`atom_decoder_layers`): atom mask token이 stage 1 token과 다른 atom token을 읽는다. Stage 1 token은 atom token을 보지 못한다. 따라서 node/global 예측은 atom query 집합과 무관하다.
 
-각 block은 pre-norm(degree별 RMS) → equivariant self-attention → bilinear equivariant FFN 순서다. Attention logit은 invariant 입력과 learned relative sequence-offset bias로 만든다. Offset은 [-R, R]로 자르고, global token은 별도 bucket을 쓴다. Value는 head마다 scalar/vector/tensor를 따로 운반한다. Head를 평균하지 않는다. Bilinear FFN의 곱(v×v′, Tv′, v⊗v′, {TT′})은 context에 없던 방향을 만들 수 있다. Signed channel map만으로는 context vector들의 선형 span을 벗어날 수 없었다.
+각 block은 pre-norm(degree별 RMS) → equivariant self-attention → bilinear equivariant FFN 순서다. Attention logit은 invariant 입력과 learned relative sequence-offset bias로 만든다. Offset은 [-R, R]로 자르고, global token은 별도 bucket을 쓴다. Bias는 ALiBi처럼 −slope_h·|offset|로 초기화한다. Mask token들은 내용이 같기 때문에, 0으로 초기화하면 모든 query가 같은 출력을 낸다. Value는 head마다 scalar/vector/tensor를 따로 운반한다. Head를 평균하지 않는다. Bilinear FFN의 곱(v×v′, Tv′, v⊗v′, {TT′})은 context에 없던 방향을 만들 수 있다. Signed channel map만으로는 context vector들의 선형 span을 벗어날 수 없었다.
 
 Atom query는 **visible sequence의 topology**에서 만든다. Residue type이 보이면 그 residue의 canonical heavy atom 전체를 쓴다. 보이지 않거나 unknown이면 backbone slot만 쓴다. OXT는 제외한다. 실제로 관측된 atom인지는 query에 영향을 주지 않고 loss mask에만 쓰인다. v0.2는 teacher가 관측한 atom 목록으로 query를 만들었다. 그래서 숨겨진 residue의 결측 atom 패턴이 query 집합으로 새어 나갈 수 있었다.
 
@@ -290,18 +290,28 @@ Node mask token은 observation의 target residue에 둔다. Teacher의 node vali
 
 Target xyz, target frame, hidden geometric edge는 어떤 query에도 없다. Structure context가 없으면 모든 l>0 출력은 정확히 0이다.
 
-## 18. Targets
+## 18. Typed latents와 targets (v0.4)
 
-Target은 teacher **encoder** 출력을 token마다 parameter 없이 정규화한 값이다. I-JEPA의 target layer norm에 대응한다. Projector와 circular latent는 v0.3에서 제거했다. v0.2의 online projector `linear.v/t`는 gradient를 받지 못했다. 그래서 teacher projector가 초기화된 무작위 사영으로 고정되어 있었다.
+원래 설계 합의의 **typed latent**를 따른다. view마다 encoder 뒤에 학습되는 `TypedLatentHead`가 있다. 이 head는 hidden Fiber를 다음 묶음으로 바꾼다.
 
 ```text
-scalar: LayerNorm(s) (affine 없음) ⊕ log((r1+τ1)/(mean r1+τ1)) ⊕ log((r2+τ2)/(mean r2+τ2))
-vector: v / sqrt(r1² + τ1²),   r1² = mean_c |v_c|²/3
-tensor: T / sqrt(r2² + τ2²),   r2² = mean_c |T_c|²_F/5
-τℓ = target_floor × (같은 sample의 valid token 평균 rℓ)
+sem   [L, D]        invariant semantic scalar (R^D)
+v, t  [L, C1, 3], [L, C2, 3, 3]   SO(3) 등변 irreps (l=1, STF l=2)  — bb/sc/aa
+circ  [L, K, 2]     learned circles S^1 — bb/sc/aa/bb_internal/chi (물리 각도 아님)
+dir   [L, Ku, 3]    단위 방향 S^2 (등변)  — bb/sc/aa, 기본 0 채널 (opt-in ablation)
+frame [L, Kr, 3, 3] SO(3) 회전, 두 vector의 Gram–Schmidt (6D 표현) — bb/aa, 기본 0 채널
 ```
 
-Global target은 token이 하나이므로 τ와 크기 scalar의 기준으로 같은 crop의 node 평균 RMS를 쓴다. Soft floor 때문에 거의 0인 l>0 상태가 단위 크기로 증폭되지 않는다. 0은 정확히 0으로 남는다. Token별 나눗셈으로 잃는 크기 정보는 crop 평균 대비 log 크기 scalar 두 개로 되살린다. 모든 항은 회전 불변량이므로 l>0 target은 등변이다.
+**경로 (설계 B)**: context Z는 online head(H)이고 predictor는 Z만 읽는다. Target Z는 EMA teacher head(teacher H)다. Head가 context 경로에서 prediction loss를 받으므로, teacher가 target을 만드는 모든 head 가중치가 학습된다. v0.2의 projector는 regularizer에서만 gradient를 받았다. Regularizer를 끈 상태에서도 이 성질을 `test_every_teacher_target_parameter_is_trained_online`이 검사한다.
+
+**Target 정규화 (parameter 없음)**
+- sem: crop 안 valid token에 대한 instance norm. 분모에 soft floor(0.01 × 평균 channel 분산)를 둔다.
+- v, t: soft per-token RMS. τ = target_floor × 평균 RMS이고, log 크기 scalar 두 개를 sem에 덧붙인다.
+- circ, dir, frame: 이미 manifold 위에 있다. 크기가 crop 평균의 10% 미만인 raw vector에서 나온 dir/frame target은 mask한다.
+- Global: sem은 layer norm이고, reference는 crop node RMS를 쓴다. sem과 irreps만 쓰고, 원·frame 같은 manifold type은 global에 두지 않는다.
+- Atom: head 없이 hidden을 정규화한다. node용으로 학습된 head를 atom 상태에 쓰지 않기 위해서다.
+
+`latent_typing: euclidean`은 all-Euclidean baseline이다. head와 용량은 같지만 manifold 사영을 하지 않고 MSE를 쓴다. frame은 이 모드에서 지원하지 않는다.
 
 ## 19. Teacher
 
@@ -315,7 +325,7 @@ Teacher forward는 eval/no-grad다. Model.train()을 호출해도 teacher를 eva
 
 ## 20. Loss
 
-Node semantic MSE와 dimension-normalized equivariant Frobenius loss를 사용한다.
+Type별 거리를 각각 O(1)로 정규화해서 더한다. sem은 MSE, l>0은 아래 Frobenius 식, circ와 dir은 1 − cos, frame은 (3 − tr(R̂ᵀR))/4를 쓴다. 회전에 따라 변하는 type(l>0, dir, frame)은 context에 좌표계가 있을 때만 쓴다. sem과 circ는 항상 쓰므로, seq→bb에서도 원 latent는 예측한다.
 
 \[
 D_1=\frac{1}{3C_1}\|\hat V-V\|_F^2,
@@ -334,7 +344,7 @@ L=L_{node}+\lambda_A L_{atom}+\lambda_G L_{global}+L_{reg}.
 
 EMA/stop-gradient/normalization 자체만으로 collapse 방지를 보장하지 않는다.
 
-정규화하기 전의 online context scalar에 variance floor를 적용한다. 여러 sample에서 균형 있게 최대 32개 node를 뽑는다. Off-diagonal covariance penalty는 opt-in이다(`covariance_weight`, 기본 0). Layer-normed scalar는 channel 합이 0이므로, 정규화 후에 covariance를 걸면 정규화 자체가 만든 상관까지 벌점이 된다. 로그에는 view별 effective rank(RankMe)와 l=1 RMS가 floor 아래인 target token 비율을 기록한다.
+정규화하기 전의 online context **sem latent**에 variance floor를 적용한다. Learned circle에는 channel별 floor relu(v_min − (1 − ‖E z‖²))를 적용한다(`circular_weight`, `circular_floor`). 이는 균일 torus prior가 아니다. `semantic_regularizer: sphere_mmd`와 `circular_regularizer: torus_mmd`는 arXiv:2609.21656의 normalized heat-kernel MMD(부록 B)를 쓰는 ablation 옵션이다. 해당 논문의 선형 복원 보장은 latent 분포가 target과 같다는 조건을 전제한다. 실제 torsion 분포는 균일하지 않으므로, 여기서는 inductive bias로만 쓴다. 여러 sample에서 균형 있게 최대 32개 node를 뽑는다. Off-diagonal covariance penalty도 기본으로 켠다(`covariance_weight` 0.04). 입력은 정규화되지 않은 head 출력이므로 layer norm이 만드는 상관 문제가 없다. Covariance를 끈 단백질 22개 확률적 overfit에서는 effective rank가 31에서 3으로 무너졌다. 이때 loss는 더 낮았지만 retrieval은 더 나빴다. 로그에는 view별 effective rank(RankMe)와 l=1 RMS가 floor 아래인 target token 비율을 기록한다.
 
 이는 **heuristic baseline**이며 물리적 torsion distribution을 uniform torus로 강제하지 않는다. l>0 Cartesian 각 성분에 Gaussian regularization을 적용하지 않는다. 회전 augmentation에 의한 variance를 semantic diversity로 오해하지 않는다.
 

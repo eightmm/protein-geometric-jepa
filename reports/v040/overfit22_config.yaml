@@ -1,0 +1,13 @@
+# 22-protein stochastic overfit: default-size model, actual CuEq CUDA.
+model:
+  backend: cueq-cuda
+  interaction: effdock
+training:
+  steps: 3000
+  batch_size: 4
+  crop_lengths: [128, 256]
+  device: cuda
+  ema: 0.99
+  ema_end: 0.999
+  allow_observed_order: true
+  covariance_weight: 0.0  # run 'off'; run 'on' used 0.04
