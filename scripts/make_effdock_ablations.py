@@ -37,11 +37,17 @@ def main():
                            'sc_context': 'spatial'},
         # v0.3 JEPA objective/predictor axes.
         'predictor_depth1': {'interaction': 'effdock', 'predictor_layers': 1},
+        # v0.4 typed latents: the all-Euclidean baseline and the S^2/SO(3) heads.
+        'euclidean_latents': {'interaction': 'effdock', 'latent_typing': 'euclidean'},
+        'direction_frame_heads': {'interaction': 'effdock', 'direction_channels': 4,
+                                  'frame_channels': 2},
     }
     training_changes = {
         'single_span_mask': {'mask_blocks': 1},
         'constant_ema': {'ema_end': training.ema},
-        'with_covariance': {'covariance_weight': 0.005},
+        'no_covariance': {'covariance_weight': 0.0},
+        'torus_mmd': {'circular_regularizer': 'torus_mmd'},
+        'sphere_mmd': {'semantic_regularizer': 'sphere_mmd'},
     }
     files = {}
     variants = [(name, update, {}) for name, update in changes.items()]

@@ -1,4 +1,4 @@
-"""Commands: prepare, demo, train, encode, evaluate, audit-manifest."""
+"""Commands: prepare, demo, train, overfit, encode, evaluate, audit-manifest."""
 import argparse
 import json
 from pathlib import Path
@@ -10,6 +10,14 @@ from .data.synthetic import sequence_record
 from .data.dataset import ManifestDataset, SyntheticDataset
 from .checkpoint import load_checkpoint
 from .models.jepa import ProteinJEPA
+
+
+def _chain(path: str, default: str | None):
+    """'file.cif:B' selects chain B for that file; otherwise the --chain default."""
+    head, sep, tail = path.rpartition(':')
+    if sep and tail and '/' not in tail and not tail.endswith(('.cif', '.pdb', '.mmcif')):
+        return head, tail
+    return path, default
 
 
 def main(argv=None):
@@ -31,6 +39,23 @@ def main(argv=None):
         else:
             p.add_argument('--length', type=int, default=32)
             p.add_argument('--count', type=int, default=8)
+    fit = commands.add_parser('overfit', help='Fit a tiny fixed set; trainability check only.')
+    fit.add_argument('--config', required=True)
+    fit.add_argument('--output', required=True)
+    source = fit.add_mutually_exclusive_group(required=True)
+    source.add_argument('--records', nargs='+', help='.npz records or .pdb/.cif structures')
+    source.add_argument('--synthetic', type=int, help='number of synthetic records')
+    fit.add_argument('--length', type=int, default=32, help='synthetic length')
+    fit.add_argument('--chain', help='chain for .pdb/.cif inputs (auto if omitted)')
+    fit.add_argument('--steps', type=int, default=300)
+    fit.add_argument('--lr', type=float, default=1e-3)
+    fit.add_argument('--eval-every', type=int, default=50)
+    fit.add_argument('--device', default='cpu')
+    fit.add_argument('--backend', choices=['reference', 'cueq-naive', 'cueq-cuda'])
+    fit.add_argument('--seed', type=int, default=0)
+    fit.add_argument('--stochastic', action='store_true',
+                     help='train like `train` (random crops/masks/tasks); evaluate on fixed ones')
+    fit.add_argument('--batch-size', type=int, default=4)
     encode = commands.add_parser('encode')
     encode.add_argument('--checkpoint', required=True)
     group = encode.add_mutually_exclusive_group(required=True)
@@ -66,6 +91,23 @@ def main(argv=None):
         else:
             dataset = ManifestDataset(args.manifest, allow_observed_order=training.allow_observed_order)
         train(cfg, training, dataset, args.output, args.resume, args.stop_after)
+    elif args.command == 'overfit':
+        from dataclasses import replace
+        from .overfit import overfit, write
+        cfg, training = load_config(args.config)
+        if args.backend:
+            cfg = replace(cfg, backend=args.backend)
+        if args.synthetic:
+            from .data.synthetic import synthetic_record
+            records = [synthetic_record(args.length, args.seed+i) for i in range(args.synthetic)]
+        else:
+            records = [ProteinRecord.load(p) if p.endswith('.npz') else read_structure(*_chain(p, args.chain))
+                       for p in args.records]
+        result = overfit(cfg, training, records, args.steps, args.lr, args.eval_every,
+                         args.device, args.seed, stochastic=args.stochastic,
+                         batch_size=args.batch_size)
+        write(result, args.output)
+        print(json.dumps({k: result[k] for k in ('records', 'pairs', 'steps', 'loss_ratio')}))
     elif args.command == 'audit-manifest':
         dataset = ManifestDataset(args.manifest)
         print(json.dumps({'train_records': len(dataset), 'fingerprint': dataset.fingerprint,

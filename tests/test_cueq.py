@@ -100,8 +100,8 @@ def test_effdock_cueq_all_tasks_gradients_and_mask_isolation(tiny_cfg, protein):
             query = torch.where(obs.target_residues)[0]
             atoms = (topology_atoms(protein.seq, obs.seq_visible, query, task == 'sc_infill')
                      if obs.spec.atom_loss else (None, None))
-            pa = model.predictor(a, protein.seq_pos, obs.spec.target, query, *atoms)
-            pb = model.predictor(b, protein.seq_pos, obs.spec.target, query, *atoms)
+            pa = model.predictor(model.online.context(a), protein.seq_pos, obs.spec.target, query, *atoms)
+            pb = model.predictor(model.online.context(b), protein.seq_pos, obs.spec.target, query, *atoms)
         pairs = [(pa.nodes, pb.nodes), (pa.global_state, pb.global_state)]
         if obs.spec.atom_loss:
             pairs.append((pa.atoms, pb.atoms))

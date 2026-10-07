@@ -4,8 +4,8 @@ from dataclasses import asdict
 import os
 import torch
 
-# 2 = v0.3 JEPA: normalized teacher-encoder targets and the two-stage predictor.
-FORMAT_VERSION = 2
+# 3 = v0.4 typed latent heads (EMA with encoders) read by the predictor.
+FORMAT_VERSION = 3
 
 
 def rng_state(generator):
@@ -45,9 +45,9 @@ def save_checkpoint(path, model, optimizer, scheduler, step, model_cfg, train_cf
 def load_checkpoint(path):
     payload = torch.load(path, map_location="cpu", weights_only=True)
     version = payload.get('format_version')
-    if version == 1:
-        raise ValueError("v0.1/v0.2 checkpoint (format 1): v0.3 replaced the JEPA targets "
-                         "(no projectors/circular heads) and the predictor; retrain instead.")
+    if version in (1, 2):
+        raise ValueError(f"Checkpoint format {version} predates the v0.4 typed latent heads "
+                         "and predictor interface; retrain instead.")
     if version != FORMAT_VERSION:
         raise ValueError("Unsupported checkpoint format.")
     return payload

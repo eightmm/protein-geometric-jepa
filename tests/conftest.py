@@ -16,7 +16,8 @@ def threads_and_seed():
 def tiny_cfg():
     return ModelConfig(scalar=16, vector=4, tensor=2, sequence_width=32, sequence_layers=1,
                        atom_layers=1, backbone_layers=1, aa_layers=1, internal_layers=1,
-                       predictor_layers=2)
+                       predictor_layers=2, latent_scalar=16, latent_vector=4, latent_tensor=2,
+                       circular_channels=4)
 
 
 @pytest.fixture
@@ -31,5 +32,7 @@ def model(tiny_cfg, request):
 
 
 def assert_fiber_close(a, b, atol=2e-5, rtol=2e-5):
-    for key in ('s','v','t'):
+    """Compare Fibers (s, v, t) or TypedLatents (every float field)."""
+    keys = ('s','v','t') if hasattr(a, 's') else ('sem','v','t','circ','dir','frame')
+    for key in keys:
         torch.testing.assert_close(getattr(a, key), getattr(b, key), atol=atol, rtol=rtol)

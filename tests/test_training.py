@@ -44,23 +44,27 @@ def test_every_teacher_target_parameter_is_trained_online(model,protein):
     def touched():
         return {n for n,p in model.online.named_parameters()
                 if p.grad is not None and float(p.grad.abs().max())>1e-7}
+    # Regularizers OFF: heads must be trained by the prediction loss itself
+    # (the v0.2 projector got gradient only from a regularizer).
+    cfg=TrainConfig(variance_weight=0.,covariance_weight=0.,circular_weight=0.)
     def cycle():
         optimizer.zero_grad(set_to_none=True)
         for task in TASKS:
             obs=make_observation(protein,task,.3,torch.Generator().manual_seed(6))
-            loss,_=model([(protein,obs)],TrainConfig()); loss.backward()
+            loss,_=model([(protein,obs)],cfg); loss.backward()
         return touched()
     cycle(); optimizer.step()
     trained=cycle()
     optimizer.zero_grad(set_to_none=True)
     for view in ('seq','bb','sc','aa','bb_internal','chi'):
         out=model.online.encoder(protein,(view,))[view]
-        parts=[out.nodes.index(out.node_valid),out.global_state]
+        z=model.online.context({view:out})[view]
+        tensors=[x for lat in (z.nodes,z.global_state) for x in lat.tensors() if x.is_floating_point()]
         if view=='aa':
-            parts.append(out.atoms)
+            tensors+=[out.atoms.s,out.atoms.v,out.atoms.t]
         # Random linear probe: a norm-based probe could miss sign-symmetric paths.
         g=torch.Generator().manual_seed(len(view))
-        sum((x*torch.randn(x.shape,generator=g)).sum() for h in parts for x in (h.s,h.v,h.t)).backward()
+        sum((x*torch.randn(x.shape,generator=g)).sum() for x in tensors).backward()
     used=touched()
     assert used, 'target probe produced no gradient'
     assert not used-trained, sorted(used-trained)
@@ -108,12 +112,39 @@ def test_task_loss_normalizes_global_target_against_crop_nodes(model,protein,mon
     """The single-token global target must receive the crop's node RMS reference."""
     import protein_jepa.models.jepa as jepa
     calls=[]
-    original=jepa.make_target
-    def spy(h,valid=None,floor=.1,eps=1e-6,reference=None):
-        calls.append((len(h.s),reference))
-        return original(h,valid,floor,eps,reference)
-    monkeypatch.setattr(jepa,'make_target',spy)
+    original=jepa.make_typed_target
+    def spy(z,valid,floor=.1,instance=True,reference=None,eps=1e-6):
+        calls.append((len(z.sem),reference))
+        return original(z,valid,floor,instance,reference,eps)
+    monkeypatch.setattr(jepa,'make_typed_target',spy)
     obs=make_observation(protein,'bb_infill',.3,torch.Generator().manual_seed(3))
     model([(protein,obs)],TrainConfig())
     single=[ref for n,ref in calls if n==1]
     assert single and all(ref is not None for ref in single)
+
+
+def test_overfit_fits_residue_specific_targets(tiny_cfg):
+    """Loss must fall AND predictions must retrieve their own residue's target;
+    a collapsed (mean) predictor lowers loss but stays at chance."""
+    from protein_jepa.data.synthetic import synthetic_record
+    from protein_jepa.overfit import overfit
+    cfg=replace(tiny_cfg,interaction='effdock',effdock_radial_hidden=24)
+    tc=TrainConfig(tasks=['seq_to_bb','bb_infill'],ema=.999,ema_end=1.,mask_min_span=2,
+                   variance_weight=0.,covariance_weight=0.,circular_weight=0.)
+    result=overfit(cfg,tc,[synthetic_record(20,1)],120,5e-3,120,'cpu',0,log=lambda *_:None)
+    last=result['history'][-1]
+    assert result['loss_ratio']<.5
+    assert last['node_top1']>2*last['chance']
+
+
+def test_stochastic_overfit_uses_training_sampling(tiny_cfg):
+    """Stochastic mode crops, masks and mixes tasks like `train`; it must run
+    and evaluate on fixed crops of the same records."""
+    from protein_jepa.data.synthetic import synthetic_record
+    from protein_jepa.overfit import overfit, sample_batch
+    tc=TrainConfig(crop_lengths=[10,14],mask_min_span=2)
+    records=[synthetic_record(18,i) for i in range(3)]
+    batch=sample_batch(records,tc,0,4,torch.Generator().manual_seed(0))
+    assert len({obs.task_name for _,obs in batch})==4 and all(len(r)<=14 for r,_ in batch)
+    result=overfit(tiny_cfg,tc,records,2,1e-3,2,'cpu',0,log=lambda *_:None,stochastic=True,batch_size=2)
+    assert result['mode']=='stochastic' and result['pairs']==27 and len(result['history'])==2

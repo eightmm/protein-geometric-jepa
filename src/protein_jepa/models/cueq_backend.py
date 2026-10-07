@@ -34,7 +34,9 @@ class CuEqMessage(nn.Module):
         irreps = cue.Irreps(cue.SO3, f"{dims.scalar}x0 + {dims.vector}x1 + {dims.tensor}x2")
         harmonics = cue.Irreps(cue.SO3, "1x0 + 1x1 + 1x2")
         self.tp = cuet.FullyConnectedTensorProduct(
-            irreps, harmonics, irreps, layout=cue.mul_ir,
+            # ir_mul needs no layout transpose; with the CUDA ops wheel installed the
+            # transpose kernel exists for CUDA only, which broke CPU execution.
+            irreps, harmonics, irreps, layout=cue.ir_mul,
             shared_weights=True, internal_weights=True,
             method="naive" if backend == "cueq-naive" else "fused_tp",
         )
@@ -57,14 +59,15 @@ class CuEqMessage(nn.Module):
             self.register_buffer(name, value.float())
 
     def pack(self, h: Fiber):
+        """Fiber -> CuEq ir_mul layout: each irrep block is [2l+1, channels]."""
         v = h.v @ self.m1
         t = torch.einsum('ncij,kij->nck', h.t, self.basis) @ self.m2
-        return torch.cat((h.s, v.flatten(1), t.flatten(1)), -1)
+        return torch.cat((h.s, v.transpose(1, 2).flatten(1), t.transpose(1, 2).flatten(1)), -1)
 
     def unpack(self, x):
         s, v, t = x.split((self.dims.scalar, 3*self.dims.vector, 5*self.dims.tensor), -1)
-        v = v.reshape(-1, self.dims.vector, 3) @ self.m1_inv
-        t = t.reshape(-1, self.dims.tensor, 5) @ self.m2_inv
+        v = v.reshape(-1, 3, self.dims.vector).transpose(1, 2) @ self.m1_inv
+        t = t.reshape(-1, 5, self.dims.tensor).transpose(1, 2) @ self.m2_inv
         return Fiber(s, v, torch.einsum('nck,kij->ncij', t, self.basis))
 
     def forward(self, h: Fiber, unit):

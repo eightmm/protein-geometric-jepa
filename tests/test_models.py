@@ -61,8 +61,8 @@ def test_hidden_target_mutation_cannot_change_context_or_prediction(model,protei
             assert_fiber_close(a[v].global_state,b[v].global_state,atol=0,rtol=0)
         query=torch.where(obs.target_residues)[0]
         atoms=topology_atoms(protein.seq,obs.seq_visible,query,task=='sc_infill') if obs.spec.atom_loss else (None,None)
-        pa=model.predictor(a,protein.seq_pos,obs.spec.target,query,*atoms)
-        pb=model.predictor(b,protein.seq_pos,obs.spec.target,query,*atoms)
+        pa=model.predictor(model.online.context(a),protein.seq_pos,obs.spec.target,query,*atoms)
+        pb=model.predictor(model.online.context(b),protein.seq_pos,obs.spec.target,query,*atoms)
     assert_fiber_close(pa.nodes,pb.nodes,atol=0,rtol=0)
     assert_fiber_close(pa.global_state,pb.global_state,atol=0,rtol=0)
     if obs.spec.atom_loss:
@@ -85,11 +85,31 @@ def test_hidden_atom_presence_never_shapes_queries_or_predictions(model,protein,
             ctx=model.online.encoder(rec,o.spec.context,o.atom_visible,o.seq_visible)
             query=torch.where(o.target_residues)[0]
             atoms=topology_atoms(rec.seq,o.seq_visible,query,task=='sc_infill')
-            outs.append((atoms,model.predictor(ctx,rec.seq_pos,o.spec.target,query,*atoms)))
+            outs.append((atoms,model.predictor(model.online.context(ctx),rec.seq_pos,o.spec.target,query,*atoms)))
     (qa,pa),(qb,pb)=outs
     assert all(torch.equal(x,y) for x,y in zip(qa,qb))
     for x,y in ((pa.nodes,pb.nodes),(pa.global_state,pb.global_state),(pa.atoms,pb.atoms)):
         assert_fiber_close(x,y,atol=0,rtol=0)
+
+
+def test_instance_target_removes_shared_component(tiny_cfg):
+    d=tiny_cfg.dims
+    shared=torch.randn(d.scalar)*50
+    h=Fiber(shared+torch.randn(7,d.scalar),torch.randn(7,d.vector,3),symmetric_traceless(torch.randn(7,d.tensor,3,3)))
+    z=make_target(h,instance=True)
+    s=z.s[:,:d.scalar]
+    torch.testing.assert_close(s.mean(0),torch.zeros(d.scalar),atol=1e-5,rtol=0)
+    torch.testing.assert_close(s.std(0,unbiased=False),torch.ones(d.scalar),atol=1e-3,rtol=0)
+    # Per-token layer norm keeps the shared direction dominant (the v0.3.0 failure).
+    ln=make_target(h).s[:,:d.scalar]
+    assert ((ln-ln.mean(0)).square().sum()/ln.square().sum())<.1
+
+
+def test_predictor_relative_bias_starts_local():
+    from protein_jepa.models.predictors import EquivariantSelfAttention
+    attn=EquivariantSelfAttention(FiberDims(8,4,2),4,8)
+    centre=attn.bias[:,8]
+    assert torch.all(attn.bias[:,:17]<=centre[:,None]) and torch.all(attn.bias[:,0]<centre)
 
 
 def test_glycine_only_sidechain_infill_has_no_atom_queries(model,protein):
@@ -129,8 +149,8 @@ def test_equivariant_predictor_without_target_coordinates(model,protein):
         b=model.online.encoder(moved,obs.spec.context,obs.atom_visible,obs.seq_visible)
         query=torch.arange(len(protein))
         atoms=topology_atoms(protein.seq,obs.seq_visible,query[obs.target_residues],False)
-        pa=model.predictor(a,protein.seq_pos,'aa',query,*atoms)
-        pb=model.predictor(b,protein.seq_pos,'aa',query,*atoms)
+        pa=model.predictor(model.online.context(a),protein.seq_pos,'aa',query,*atoms)
+        pb=model.predictor(model.online.context(b),protein.seq_pos,'aa',query,*atoms)
     for x,y in ((pa.nodes,pb.nodes),(pa.global_state,pb.global_state),(pa.atoms,pb.atoms)):
         assert_fiber_close(x.rotate(r),y,atol=5e-5,rtol=5e-5)
     assert pa.nodes.v.abs().sum()>0 and pa.atoms.t.abs().sum()>0
@@ -139,7 +159,7 @@ def test_equivariant_predictor_without_target_coordinates(model,protein):
 def test_sequence_only_predictor_has_no_fixed_world_vector(model,protein):
     with torch.no_grad():
         a=model.online.encoder(protein,('seq',))
-        z=model.predictor(a,protein.seq_pos,'bb',torch.arange(len(protein)))
+        z=model.predictor(model.online.context(a),protein.seq_pos,'bb',torch.arange(len(protein)))
     for h in (z.nodes,z.global_state):
         assert torch.count_nonzero(h.v)==0
         assert torch.count_nonzero(h.t)==0

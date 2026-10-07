@@ -190,15 +190,15 @@ def test_degree_aggregation_rejects_adaptive_cutoff():
         EffDockInteractionBlock(FiberDims(8, 4, 2), aggregation='degree', adaptive_cutoff=True)
 
 
-def test_resume_rejects_removed_training_keys(tiny_cfg, tmp_path):
+def test_resume_rejects_unknown_training_keys(tiny_cfg, tmp_path):
     training = TrainConfig(steps=2, batch_size=1, crop_lengths=[10], threads=1)
     dataset = SyntheticDataset(2, 12, 17)
     train(tiny_cfg, training, dataset, tmp_path/'r', stop_after=1)
     path = tmp_path/'r/last.pt'
     payload = load_checkpoint(path)
-    payload['train_config']['circular_weight'] = 0.02
+    payload['train_config']['not_an_option'] = 0.02
     torch.save(payload, path)
-    with pytest.raises(ValueError, match='removed in v0.3'):
+    with pytest.raises(ValueError, match='Unknown TrainConfig'):
         train(tiny_cfg, training, dataset, tmp_path/'r', resume=path)
 
 
@@ -216,7 +216,7 @@ def test_ablation_writer_accepts_every_shipped_gpu_preset(tmp_path):
         subprocess.run([sys.executable, str(root/'scripts/make_effdock_ablations.py'),
                         '--base', str(root/'configs'/preset), '--output', str(out), '--seeds', '1'],
                        check=True, capture_output=True)
-        assert len(list(out.glob('*.yaml'))) == 19
+        assert len(list(out.glob('*.yaml'))) == 23
 
 
 def test_format1_checkpoint_rejected(tiny_cfg, tmp_path):

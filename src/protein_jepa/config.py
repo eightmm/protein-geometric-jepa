@@ -17,6 +17,18 @@ class ModelConfig:
     backbone_layers: int = 3
     aa_layers: int = 2
     internal_layers: int = 2
+    # Typed latent heads (EMA-tracked with the encoders): semantic scalars,
+    # l=1/l=2 irreps, learned circles; S^2 directions and SO(3) frames are
+    # the opt-in next ablation. latent_typing=euclidean: same heads, no
+    # manifold projection (the all-Euclidean baseline).
+    latent_scalar: int = 64
+    latent_vector: int = 16
+    latent_tensor: int = 8
+    circular_channels: int = 8
+    direction_channels: int = 0
+    frame_channels: int = 0
+    gram_channels: int = 4
+    latent_typing: str = "typed"
     # Predictor: joint self-attention over context and mask tokens (I-JEPA style).
     predictor_layers: int = 4
     atom_decoder_layers: int = 2
@@ -56,7 +68,15 @@ class ModelConfig:
             raise ValueError("sequence_width must be divisible by heads.")
         if self.scalar % self.heads:
             raise ValueError("scalar must be divisible by heads for the predictor.")
-        for key in ("scalar", "vector", "tensor", "sequence_layers", "internal_layers",
+        for key in ("circular_channels", "direction_channels", "frame_channels", "gram_channels",
+                    "latent_vector", "latent_tensor"):
+            if getattr(self, key) < 0:
+                raise ValueError(f"{key} must be nonnegative.")
+        if self.latent_typing not in {"typed", "euclidean"}:
+            raise ValueError("latent_typing must be typed or euclidean.")
+        if self.frame_channels and self.latent_typing != "typed":
+            raise ValueError("frame_channels require latent_typing: typed (SO(3) projection).")
+        for key in ("scalar", "vector", "tensor", "sequence_layers", "internal_layers", "latent_scalar",
                     "predictor_layers", "atom_decoder_layers", "predictor_expansion",
                     "relative_positions"):
             if getattr(self, key) < 1:
@@ -115,13 +135,25 @@ class TrainConfig:
     mask_blocks: int = 4
     mask_min_span: int = 8
     mask_mode: str = "span"
-    rigid_augmentation: bool = True
+    # Off by default: the structure path, typed heads and losses are exactly
+    # SO(3)-equivariant/invariant and translation-free, so a shared rigid
+    # transform changes loss/gradients only at float precision (~1e-7/1e-5).
+    # Keep for testing non-equivariant variants.
+    rigid_augmentation: bool = False
     translation_std: float = 1.0
     global_weight: float = 0.1
     atom_weight: float = 0.2
     variance_weight: float = 0.05
-    # Applied to raw online context scalars; covariance is opt-in (see SPEC 21).
-    covariance_weight: float = 0.0
+    # On raw (un-normalized) online context semantic latents. Covariance is ON:
+    # without it a 22-protein stochastic overfit collapsed to effective rank ~3
+    # with lower loss but worse retrieval (docs/TYPED_LATENT_V040_KO.md).
+    covariance_weight: float = 0.04
+    # Learned circles: per-channel floor relu(min - (1-|E z|^2)).
+    circular_weight: float = 0.05
+    circular_floor: float = 0.1
+    # Geometry-aware heat-kernel MMD (arXiv:2609.21656) as ablation options.
+    semantic_regularizer: str = "variance"
+    circular_regularizer: str = "floor"
     # Soft RMS floor for l>0 targets, relative to the sample's mean token RMS.
     target_floor: float = 0.1
     seed: int = 17
@@ -152,21 +184,16 @@ class TrainConfig:
             raise ValueError("translation_std must be nonnegative.")
         if self.threads < 1 or self.grad_clip <= 0 or self.weight_decay < 0:
             raise ValueError("Invalid threads/gradient clipping/weight decay.")
+        if self.semantic_regularizer not in {"variance", "sphere_mmd"}:
+            raise ValueError("semantic_regularizer must be variance or sphere_mmd.")
+        if self.circular_regularizer not in {"floor", "torus_mmd"}:
+            raise ValueError("circular_regularizer must be floor or torus_mmd.")
         if min(self.global_weight, self.atom_weight, self.variance_weight, self.covariance_weight,
-               self.target_floor) < 0:
+               self.target_floor, self.circular_weight, self.circular_floor) < 0:
             raise ValueError("Loss weights must be nonnegative.")
 
 
-# Options removed with the v0.3 JEPA target redesign (no projector/circle heads).
-REMOVED_V03 = {"latent_scalar", "latent_vector", "latent_tensor", "circular_channels",
-               "circular_weight"}
-
-
 def _checked(cls, data):
-    removed = set(data) & REMOVED_V03
-    if removed:
-        raise ValueError(f"{sorted(removed)} were removed in v0.3: targets are normalized "
-                         "teacher encoder states; delete these options.")
     unknown = set(data)-{f.name for f in fields(cls)}
     if unknown:
         raise ValueError(f"Unknown {cls.__name__} options: {sorted(unknown)}")
