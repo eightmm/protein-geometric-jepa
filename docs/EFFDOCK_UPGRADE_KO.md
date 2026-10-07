@@ -17,7 +17,7 @@
 | Edge-type embedding, distance decay | Directed BB/SC/residue role + bond 여부, type별 decay | Ligand pharmacophore나 residue label은 가져오지 않음 |
 | Gate-normalized aggregation | 비교용 `gate` 옵션으로 유지 | 새 기본값은 attention mass를 보존하는 `soft` |
 | Mixed-irrep RMSNorm, norm-gated activation | Degree별 RMSNorm과 invariant norm gate | Public Fiber는 SO(3) scalar/vector/STF 계약 유지 |
-| Time-conditioned AdaLN | Visible invariant context와 static stage ID로 조건화 | JEPA에 없는 flow time을 만들어 넣지 않음 |
+| Time-conditioned AdaLN | Visible invariant context로 조건화 (v0.2의 static stage ID는 블록별 상수 bias에 불과해 v0.3에서 제거) | JEPA에 없는 flow time을 만들어 넣지 않음 |
 | Equivariant post block | Equivariant post map + 별도 residual FFN | Residual scale은 0.1로 시작, 학습 가능 |
 | 원자 force → Newton–Euler fragment motion | 옮기지 않음 | 이번 모델은 coordinate refinement가 아닌 latent pretraining |
 | Ligand fragment / protein을 하나의 heterogeneous graph로 처리 | BB/SC/AA hierarchy 유지 | Pure BB output의 SC 격리와 단독 inference를 보존 |
@@ -123,6 +123,8 @@ Data, canonical mapping, sequence-cluster split, crop/mask, 총 관측 residue �
 핵심 평가는 (a) sequence-only representation에 구조 학습의 이득이 남는가, (b) BB-only에서도 SC/AA 공동학습 이득이 남는가, (c) pocket/interface residue 및 atom-level task에서 추가 비용 대비 이득이 있는가다. Useful representation을 확인하기 전에는 l_max나 crop/global objective를 더 늘리는 것을 우선하지 않는다.
 
 ## 10. 다음 강화 우선순위
+
+> v0.3 상태: P2의 directional invariant(`effdock_directional`), FFN의 degree 간 결합(`effdock_ffn: bilinear`), top-k 경계의 연속성(`effdock_adaptive_cutoff`), SC inter-residue context(`sc_context: spatial`)는 opt-in으로 구현되었고 효과는 미검증이다. Predictor/target 결함 수정은 [JEPA_V030_KO.md](JEPA_V030_KO.md)를 본다.
 
 **P0 — 실제 CuEq GPU 실행 gate.** FCTP와 basis bridge의 forward/backward, 깊은 stack의 equivariance, hidden-target mutation, optimizer/EMA/resume, CUDA/NCCL 2-rank를 검사한다. FP32부터 시작한다. CPU naive 성공만으로 fused kernel이나 NCCL을 통과했다고 간주하지 않는다.
 

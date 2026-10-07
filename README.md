@@ -2,7 +2,19 @@
 
 **Sequence ↔ backbone ↔ sidechain/all-atom, with node-wise typed latent prediction.**
 
-연구 구현 **v0.2.0**. Atom / residue / global 표현을 함께 유지하며, Sequence Transformer, backbone-only SO(3) GNN, SC atom branch, AA fusion, backbone internal-coordinate encoder와 χ encoder를 포함합니다. **Sidechain과 χ를 제외하지 않았습니다.**
+연구 구현 **v0.3.0**. Atom / residue / global 표현을 함께 유지하며, Sequence Transformer, backbone-only SO(3) GNN, SC atom branch, AA fusion, backbone internal-coordinate encoder와 χ encoder를 포함합니다. **Sidechain과 χ를 제외하지 않았습니다.**
+
+## v0.3: JEPA target·predictor 결함 수정
+
+v0.2를 실행해 확인한 결함을 고쳤습니다.
+
+- Target projector가 학습되지 않아 l>0 target이 고정된 무작위 사영이었습니다. 이제 target은 teacher encoder 상태를 parameter 없이 정규화한 값입니다(soft RMS floor와 log 크기 scalar).
+- Predictor는 cross-attention 1층에서 2단계 equivariant transformer로 바뀌었습니다. Joint stack 뒤에 atom decoder가 있고, relative position bias와 bilinear FFN을 씁니다.
+- Atom query는 관측된 원자 목록이 아니라 visible sequence의 topology로 만듭니다.
+- Mask는 겹치지 않는 multi-block span입니다. Task는 sample마다 섞이고, EMA는 schedule을 따릅니다.
+- Reference message가 CG 경로 전체를 갖습니다.
+
+Encoder 확장 네 가지(`sc_context: spatial`, `effdock_directional`, `effdock_ffn: bilinear`, `effdock_adaptive_cutoff`)는 opt-in 실험입니다. 네 가지를 모두 켠 설정은 `configs/jepa_full_cueq_gpu.yaml`입니다. **v0.2 checkpoint는 읽지 않습니다.** 계획 단계에서 Codex, Claude, Antigravity council의 검토를 거쳤습니다. 근거와 검증 범위는 [JEPA_V030_KO.md](docs/JEPA_V030_KO.md)에 있습니다. CPU에서 165 passed / 2 CUDA skips이고, 실제 CuEq 0.9.0 CPU 테스트도 실행되었습니다. GPU 학습과 품질 향상은 아직 검증하지 않았습니다.
 
 ## v0.2: EFF-Dock-inspired CuEq interaction
 
@@ -35,7 +47,8 @@ N/CA/C/O ─ BB atom stem ─ BB residue GNN ───────── H_BB + 
 SC atoms ─ SC atom stem ───────────┼─ AA fusion ── H_AA_atom + H_AA + G_AA
 BB internal coordinates ─ independent Transformer ─ H_BB_internal
 Chi + symmetry/validity ─ independent Transformer ─ H_chi
-Visible view states ─ conditional predictor ─ masked learned node/atom/global latents
+Visible view states + mask tokens ─ joint equivariant predictor ─ atom decoder
+                                   └─ normalized EMA-teacher node/atom/global states
 ```
 
 BB output은 SC/AA 정보로 덮어쓰지 않습니다. 좌표, polymer connectivity, backbone direction, frame, φ/ψ/ω, Cα pseudo-angle/dihedral, sidechain geometry와 χ를 사용합니다. SASA, DSSP, secondary-structure rule label이나 residue physicochemical lookup은 사용하지 않습니다.
@@ -75,12 +88,13 @@ python scripts/make_effdock_ablations.py --base configs/effdock_cueq_gpu.yaml \
   --output runs/ablation-configs --seeds 17 29 43
 ```
 
-두 번째 명령은 10개 variant × 3개 seed의 완전한 설정을 생성하며 **학습/job 제출을 시작하지 않습니다.** Equal-step/equal-compute 및 parameter-matched 비교를 구분하세요. 작은 smoke loss로 품질 순위를 판단하지 않습니다.
+두 번째 명령은 19개 variant(v0.2 interaction 10개, v0.3 encoder·predictor 실험 6개, masking·EMA·covariance 3개) × 3개 seed의 완전한 설정을 생성하며 **학습/job 제출을 시작하지 않습니다.** Equal-step/equal-compute 및 parameter-matched 비교를 구분하세요. 작은 smoke loss로 품질 순위를 판단하지 않습니다.
 
 ## 문서
 
 | 문서 | 내용 |
 |---|---|
+| [JEPA_V030_KO.md](docs/JEPA_V030_KO.md) | v0.3 결함 수정, target·predictor 정의, council 기록, 검증 범위 |
 | [EFFDOCK_UPGRADE_KO.md](docs/EFFDOCK_UPGRADE_KO.md) | 원본 EFF-Dock 비교, 수식, 강화 tradeoff, 후속 분석 |
 | [UPGRADE_RUNBOOK.md](docs/UPGRADE_RUNBOOK.md) | CPU/CuEq/GPU gate, 학습·resume·DDP·ablation |
 | [V020_VALIDATION.md](docs/V020_VALIDATION.md) | 이번 릴리스의 실행 증거·CI·미검증 범위 |

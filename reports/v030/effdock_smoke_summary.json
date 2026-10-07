@@ -1,0 +1,10 @@
+{
+  "steps": 18,
+  "loss": 4.150270938873291,
+  "seconds": 2.5562199279665947,
+  "backend": "reference",
+  "interaction": "effdock",
+  "device": "cpu",
+  "world_size": 1,
+  "trainable_parameters": 117849
+}

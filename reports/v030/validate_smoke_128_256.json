@@ -1,0 +1,514 @@
+{
+  "interpretation": "Synthetic functional smoke and one-shot timing, NOT a quality benchmark.",
+  "device": "cpu",
+  "threads": 1,
+  "versions": {
+    "torch": "2.14.1+cpu",
+    "python": "3.12.12",
+    "cuequivariance": "0.9.0",
+    "cuequivariance-torch": "0.9.0"
+  },
+  "results": [
+    {
+      "model": {
+        "scalar": 16,
+        "vector": 4,
+        "tensor": 2,
+        "sequence_width": 32,
+        "sequence_layers": 1,
+        "heads": 4,
+        "atom_layers": 1,
+        "backbone_layers": 1,
+        "aa_layers": 1,
+        "internal_layers": 1,
+        "predictor_layers": 2,
+        "atom_decoder_layers": 1,
+        "predictor_expansion": 2,
+        "relative_positions": 32,
+        "include_chi5": false,
+        "radius_atom": 5.0,
+        "radius_residue": 12.0,
+        "max_neighbors": 24,
+        "sc_context": "local",
+        "backend": "reference",
+        "dropout": 0.0,
+        "interaction": "baseline",
+        "effdock_radial_hidden": 24,
+        "effdock_expansion": 2,
+        "effdock_residual_scale": 0.1,
+        "effdock_aggregation": "soft",
+        "effdock_conditioning": true,
+        "effdock_dual_radial": true,
+        "effdock_distance_decay": true,
+        "effdock_norm_rescale": true,
+        "effdock_smooth_cutoff": true,
+        "effdock_directional": false,
+        "effdock_ffn": "gate",
+        "effdock_adaptive_cutoff": false
+      },
+      "trainable_parameters": 75614,
+      "runs": [
+        {
+          "length": 128,
+          "task": "seq_to_bb",
+          "loss": 1.68120539188385,
+          "finite_backward": true,
+          "seconds": 0.028000082005746663
+        },
+        {
+          "length": 128,
+          "task": "bb_to_seq",
+          "loss": 1.2882746458053589,
+          "finite_backward": true,
+          "seconds": 0.03980423498433083
+        },
+        {
+          "length": 128,
+          "task": "cart_to_internal",
+          "loss": 1.3117488622665405,
+          "finite_backward": true,
+          "seconds": 0.03846530895680189
+        },
+        {
+          "length": 128,
+          "task": "internal_to_bb",
+          "loss": 1.6948374509811401,
+          "finite_backward": true,
+          "seconds": 0.1915353189688176
+        },
+        {
+          "length": 128,
+          "task": "sc_to_chi",
+          "loss": 1.4305511713027954,
+          "finite_backward": true,
+          "seconds": 0.05164606205653399
+        },
+        {
+          "length": 128,
+          "task": "chi_to_sc",
+          "loss": 3.1398611068725586,
+          "finite_backward": true,
+          "seconds": 0.08348191599361598
+        },
+        {
+          "length": 128,
+          "task": "sc_infill",
+          "loss": 4.165870189666748,
+          "finite_backward": true,
+          "seconds": 0.2538526280550286
+        },
+        {
+          "length": 128,
+          "task": "bb_infill",
+          "loss": 3.7701592445373535,
+          "finite_backward": true,
+          "seconds": 0.04122771800030023
+        },
+        {
+          "length": 128,
+          "task": "aa_infill",
+          "loss": 4.139373779296875,
+          "finite_backward": true,
+          "seconds": 0.19550819403957576
+        },
+        {
+          "length": 256,
+          "task": "seq_to_bb",
+          "loss": 1.6909865140914917,
+          "finite_backward": true,
+          "seconds": 0.0527514279820025
+        },
+        {
+          "length": 256,
+          "task": "bb_to_seq",
+          "loss": 1.2917821407318115,
+          "finite_backward": true,
+          "seconds": 0.07516820007003844
+        },
+        {
+          "length": 256,
+          "task": "cart_to_internal",
+          "loss": 1.3590853214263916,
+          "finite_backward": true,
+          "seconds": 0.07512057293206453
+        },
+        {
+          "length": 256,
+          "task": "internal_to_bb",
+          "loss": 1.7035572528839111,
+          "finite_backward": true,
+          "seconds": 0.0598081280477345
+        },
+        {
+          "length": 256,
+          "task": "sc_to_chi",
+          "loss": 1.4759312868118286,
+          "finite_backward": true,
+          "seconds": 0.09894707298371941
+        },
+        {
+          "length": 256,
+          "task": "chi_to_sc",
+          "loss": 3.1437458992004395,
+          "finite_backward": true,
+          "seconds": 0.1808661880204454
+        },
+        {
+          "length": 256,
+          "task": "sc_infill",
+          "loss": 4.180095672607422,
+          "finite_backward": true,
+          "seconds": 0.5447457749396563
+        },
+        {
+          "length": 256,
+          "task": "bb_infill",
+          "loss": 3.899289131164551,
+          "finite_backward": true,
+          "seconds": 0.06868044601287693
+        },
+        {
+          "length": 256,
+          "task": "aa_infill",
+          "loss": 4.210269927978516,
+          "finite_backward": true,
+          "seconds": 0.4431117590283975
+        }
+      ]
+    },
+    {
+      "model": {
+        "scalar": 16,
+        "vector": 4,
+        "tensor": 2,
+        "sequence_width": 32,
+        "sequence_layers": 1,
+        "heads": 4,
+        "atom_layers": 1,
+        "backbone_layers": 1,
+        "aa_layers": 1,
+        "internal_layers": 1,
+        "predictor_layers": 2,
+        "atom_decoder_layers": 1,
+        "predictor_expansion": 2,
+        "relative_positions": 32,
+        "include_chi5": false,
+        "radius_atom": 5.0,
+        "radius_residue": 12.0,
+        "max_neighbors": 24,
+        "sc_context": "local",
+        "backend": "reference",
+        "dropout": 0.0,
+        "interaction": "effdock",
+        "effdock_radial_hidden": 24,
+        "effdock_expansion": 2,
+        "effdock_residual_scale": 0.1,
+        "effdock_aggregation": "soft",
+        "effdock_conditioning": true,
+        "effdock_dual_radial": true,
+        "effdock_distance_decay": true,
+        "effdock_norm_rescale": true,
+        "effdock_smooth_cutoff": true,
+        "effdock_directional": false,
+        "effdock_ffn": "gate",
+        "effdock_adaptive_cutoff": false
+      },
+      "trainable_parameters": 117849,
+      "runs": [
+        {
+          "length": 128,
+          "task": "seq_to_bb",
+          "loss": 1.1013314723968506,
+          "finite_backward": true,
+          "seconds": 0.028453367995098233
+        },
+        {
+          "length": 128,
+          "task": "bb_to_seq",
+          "loss": 1.4665980339050293,
+          "finite_backward": true,
+          "seconds": 0.0429690380115062
+        },
+        {
+          "length": 128,
+          "task": "cart_to_internal",
+          "loss": 1.059601068496704,
+          "finite_backward": true,
+          "seconds": 0.04548051906749606
+        },
+        {
+          "length": 128,
+          "task": "internal_to_bb",
+          "loss": 1.1111677885055542,
+          "finite_backward": true,
+          "seconds": 0.03198256506584585
+        },
+        {
+          "length": 128,
+          "task": "sc_to_chi",
+          "loss": 1.051734209060669,
+          "finite_backward": true,
+          "seconds": 0.05462620605248958
+        },
+        {
+          "length": 128,
+          "task": "chi_to_sc",
+          "loss": 3.5252113342285156,
+          "finite_backward": true,
+          "seconds": 0.08649331307969987
+        },
+        {
+          "length": 128,
+          "task": "sc_infill",
+          "loss": 4.165194511413574,
+          "finite_backward": true,
+          "seconds": 0.28195867501199245
+        },
+        {
+          "length": 128,
+          "task": "bb_infill",
+          "loss": 3.5806806087493896,
+          "finite_backward": true,
+          "seconds": 0.04922811209689826
+        },
+        {
+          "length": 128,
+          "task": "aa_infill",
+          "loss": 4.118037223815918,
+          "finite_backward": true,
+          "seconds": 0.23899741109926254
+        },
+        {
+          "length": 256,
+          "task": "seq_to_bb",
+          "loss": 1.104081153869629,
+          "finite_backward": true,
+          "seconds": 0.05795607599429786
+        },
+        {
+          "length": 256,
+          "task": "bb_to_seq",
+          "loss": 1.4883720874786377,
+          "finite_backward": true,
+          "seconds": 0.08975661604199558
+        },
+        {
+          "length": 256,
+          "task": "cart_to_internal",
+          "loss": 1.119551181793213,
+          "finite_backward": true,
+          "seconds": 0.09278989594895393
+        },
+        {
+          "length": 256,
+          "task": "internal_to_bb",
+          "loss": 1.1129662990570068,
+          "finite_backward": true,
+          "seconds": 0.06553337094374001
+        },
+        {
+          "length": 256,
+          "task": "sc_to_chi",
+          "loss": 1.058535099029541,
+          "finite_backward": true,
+          "seconds": 0.10916729201562703
+        },
+        {
+          "length": 256,
+          "task": "chi_to_sc",
+          "loss": 3.4653549194335938,
+          "finite_backward": true,
+          "seconds": 0.18590311496518552
+        },
+        {
+          "length": 256,
+          "task": "sc_infill",
+          "loss": 4.063351154327393,
+          "finite_backward": true,
+          "seconds": 0.727133582928218
+        },
+        {
+          "length": 256,
+          "task": "bb_infill",
+          "loss": 3.3747806549072266,
+          "finite_backward": true,
+          "seconds": 0.08330345794092864
+        },
+        {
+          "length": 256,
+          "task": "aa_infill",
+          "loss": 4.105384826660156,
+          "finite_backward": true,
+          "seconds": 0.525616317987442
+        }
+      ]
+    },
+    {
+      "model": {
+        "scalar": 16,
+        "vector": 4,
+        "tensor": 2,
+        "sequence_width": 32,
+        "sequence_layers": 1,
+        "heads": 4,
+        "atom_layers": 1,
+        "backbone_layers": 1,
+        "aa_layers": 1,
+        "internal_layers": 1,
+        "predictor_layers": 2,
+        "atom_decoder_layers": 1,
+        "predictor_expansion": 2,
+        "relative_positions": 32,
+        "include_chi5": false,
+        "radius_atom": 5.0,
+        "radius_residue": 12.0,
+        "max_neighbors": 24,
+        "sc_context": "spatial",
+        "backend": "reference",
+        "dropout": 0.0,
+        "interaction": "effdock",
+        "effdock_radial_hidden": 24,
+        "effdock_expansion": 2,
+        "effdock_residual_scale": 0.1,
+        "effdock_aggregation": "soft",
+        "effdock_conditioning": true,
+        "effdock_dual_radial": true,
+        "effdock_distance_decay": true,
+        "effdock_norm_rescale": true,
+        "effdock_smooth_cutoff": true,
+        "effdock_directional": true,
+        "effdock_ffn": "bilinear",
+        "effdock_adaptive_cutoff": true
+      },
+      "trainable_parameters": 124429,
+      "runs": [
+        {
+          "length": 128,
+          "task": "seq_to_bb",
+          "loss": 1.5217490196228027,
+          "finite_backward": true,
+          "seconds": 0.0486632069805637
+        },
+        {
+          "length": 128,
+          "task": "bb_to_seq",
+          "loss": 1.4448516368865967,
+          "finite_backward": true,
+          "seconds": 0.05273458699230105
+        },
+        {
+          "length": 128,
+          "task": "cart_to_internal",
+          "loss": 0.9947873950004578,
+          "finite_backward": true,
+          "seconds": 0.05305419792421162
+        },
+        {
+          "length": 128,
+          "task": "internal_to_bb",
+          "loss": 1.5321499109268188,
+          "finite_backward": true,
+          "seconds": 0.038774357992224395
+        },
+        {
+          "length": 128,
+          "task": "sc_to_chi",
+          "loss": 1.3444877862930298,
+          "finite_backward": true,
+          "seconds": 0.08488159603439271
+        },
+        {
+          "length": 128,
+          "task": "chi_to_sc",
+          "loss": 3.644865036010742,
+          "finite_backward": true,
+          "seconds": 0.10968446300830692
+        },
+        {
+          "length": 128,
+          "task": "sc_infill",
+          "loss": 4.361262321472168,
+          "finite_backward": true,
+          "seconds": 0.35697806999087334
+        },
+        {
+          "length": 128,
+          "task": "bb_infill",
+          "loss": 3.803101062774658,
+          "finite_backward": true,
+          "seconds": 0.057446120074018836
+        },
+        {
+          "length": 128,
+          "task": "aa_infill",
+          "loss": 4.391952991485596,
+          "finite_backward": true,
+          "seconds": 0.2917072420241311
+        },
+        {
+          "length": 256,
+          "task": "seq_to_bb",
+          "loss": 1.5286566019058228,
+          "finite_backward": true,
+          "seconds": 0.06131932605057955
+        },
+        {
+          "length": 256,
+          "task": "bb_to_seq",
+          "loss": 1.404083013534546,
+          "finite_backward": true,
+          "seconds": 0.09797569003421813
+        },
+        {
+          "length": 256,
+          "task": "cart_to_internal",
+          "loss": 1.0456939935684204,
+          "finite_backward": true,
+          "seconds": 0.10080233810003847
+        },
+        {
+          "length": 256,
+          "task": "internal_to_bb",
+          "loss": 1.5385435819625854,
+          "finite_backward": true,
+          "seconds": 0.06936186191160232
+        },
+        {
+          "length": 256,
+          "task": "sc_to_chi",
+          "loss": 1.3814024925231934,
+          "finite_backward": true,
+          "seconds": 0.15881659602746367
+        },
+        {
+          "length": 256,
+          "task": "chi_to_sc",
+          "loss": 3.6273820400238037,
+          "finite_backward": true,
+          "seconds": 0.21215438609942794
+        },
+        {
+          "length": 256,
+          "task": "sc_infill",
+          "loss": 4.464837551116943,
+          "finite_backward": true,
+          "seconds": 0.7503102229675278
+        },
+        {
+          "length": 256,
+          "task": "bb_infill",
+          "loss": 3.7256407737731934,
+          "finite_backward": true,
+          "seconds": 0.09495757101103663
+        },
+        {
+          "length": 256,
+          "task": "aa_infill",
+          "loss": 4.477438449859619,
+          "finite_backward": true,
+          "seconds": 0.6076259289402515
+        }
+      ]
+    }
+  ]
+}

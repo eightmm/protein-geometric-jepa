@@ -1,6 +1,14 @@
-# Implementation status — v0.2.0
+# Implementation status — v0.3.0
 
-This is an executable research implementation, not a pretrained protein model or a docking model. Version 0.2 adds the EFF-Dock-inspired interaction architecture; it does not remove SC/AA or chi.
+This is an executable research implementation, not a pretrained protein model or a docking model.
+
+## v0.3.0 (JEPA objective and predictor)
+
+v0.3 fixes defects found by executing v0.2: JEPA targets were a fixed random projection for l>0 (untrained projectors), the AA atom target path contained an untrained activation, the predictor was one cross-attention layer whose l>0 output could not leave the span of context vectors, and atom queries were built from observed teacher atoms. Targets are now normalized teacher-encoder states, the predictor is a two-stage equivariant transformer with topology-derived atom queries, masks are exact-size multi-block spans, tasks mix per sample, and EMA follows a schedule. The reference message now has the full CG path set. Encoder extensions (`sc_context: spatial`, `effdock_directional`, `effdock_ffn: bilinear`, `effdock_adaptive_cutoff`) are implemented as opt-in experiments. **Checkpoints from v0.1/v0.2 are rejected (format 2).** Details, council record and evidence: [JEPA_V030_KO.md](JEPA_V030_KO.md), [reports/v030](../reports/v030/).
+
+Verified for v0.3 on CPU: 165 tests pass and 2 CUDA tests skip; actual CuEq 0.9.0 CPU tests (8) execute; four 18-step smoke demos, 2-process Gloo DDP, and 128/256-residue forward/backward for baseline/effdock/effdock-full pass. Not verified: CUDA/NCCL, real-corpus training, and whether representation quality improved (requires the ablation grid and frozen probes).
+
+The sections below describe the v0.2 interaction release and remain accurate unless superseded above.
 
 ## Implemented and integrated
 

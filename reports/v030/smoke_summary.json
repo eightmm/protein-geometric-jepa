@@ -1,0 +1,10 @@
+{
+  "steps": 18,
+  "loss": 3.9634335041046143,
+  "seconds": 3.8225471939658746,
+  "backend": "reference",
+  "interaction": "baseline",
+  "device": "cpu",
+  "world_size": 1,
+  "trainable_parameters": 75614
+}

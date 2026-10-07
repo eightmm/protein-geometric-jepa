@@ -1,0 +1,221 @@
+{
+  "interpretation": "Synthetic functional smoke and one-shot timing, NOT a quality benchmark.",
+  "device": "cpu",
+  "threads": 2,
+  "versions": {
+    "torch": "2.14.1+cpu",
+    "python": "3.12.12",
+    "cuequivariance": "0.9.0",
+    "cuequivariance-torch": "0.9.0"
+  },
+  "results": [
+    {
+      "model": {
+        "scalar": 64,
+        "vector": 16,
+        "tensor": 8,
+        "sequence_width": 128,
+        "sequence_layers": 3,
+        "heads": 4,
+        "atom_layers": 1,
+        "backbone_layers": 3,
+        "aa_layers": 2,
+        "internal_layers": 2,
+        "predictor_layers": 4,
+        "atom_decoder_layers": 2,
+        "predictor_expansion": 2,
+        "relative_positions": 32,
+        "include_chi5": false,
+        "radius_atom": 5.0,
+        "radius_residue": 12.0,
+        "max_neighbors": 24,
+        "sc_context": "local",
+        "backend": "reference",
+        "dropout": 0.0,
+        "interaction": "effdock",
+        "effdock_radial_hidden": 96,
+        "effdock_expansion": 2,
+        "effdock_residual_scale": 0.1,
+        "effdock_aggregation": "soft",
+        "effdock_conditioning": true,
+        "effdock_dual_radial": true,
+        "effdock_distance_decay": true,
+        "effdock_norm_rescale": true,
+        "effdock_smooth_cutoff": true,
+        "effdock_directional": false,
+        "effdock_ffn": "gate",
+        "effdock_adaptive_cutoff": false
+      },
+      "trainable_parameters": 3169070,
+      "runs": [
+        {
+          "length": 256,
+          "task": "seq_to_bb",
+          "loss": 1.6087511777877808,
+          "finite_backward": true,
+          "seconds": 0.17122741707134992
+        },
+        {
+          "length": 256,
+          "task": "bb_to_seq",
+          "loss": 1.5446237325668335,
+          "finite_backward": true,
+          "seconds": 0.3380403859773651
+        },
+        {
+          "length": 256,
+          "task": "cart_to_internal",
+          "loss": 1.4605027437210083,
+          "finite_backward": true,
+          "seconds": 0.30399595003109425
+        },
+        {
+          "length": 256,
+          "task": "internal_to_bb",
+          "loss": 1.6212791204452515,
+          "finite_backward": true,
+          "seconds": 0.3176632890244946
+        },
+        {
+          "length": 256,
+          "task": "sc_to_chi",
+          "loss": 1.5626469850540161,
+          "finite_backward": true,
+          "seconds": 0.18560500105377287
+        },
+        {
+          "length": 256,
+          "task": "chi_to_sc",
+          "loss": 3.8350517749786377,
+          "finite_backward": true,
+          "seconds": 0.4644511559745297
+        },
+        {
+          "length": 256,
+          "task": "sc_infill",
+          "loss": 4.32781982421875,
+          "finite_backward": true,
+          "seconds": 2.89327471004799
+        },
+        {
+          "length": 256,
+          "task": "bb_infill",
+          "loss": 3.8664419651031494,
+          "finite_backward": true,
+          "seconds": 0.2676042589591816
+        },
+        {
+          "length": 256,
+          "task": "aa_infill",
+          "loss": 4.2889485359191895,
+          "finite_backward": true,
+          "seconds": 1.76652526401449
+        }
+      ]
+    },
+    {
+      "model": {
+        "scalar": 64,
+        "vector": 16,
+        "tensor": 8,
+        "sequence_width": 128,
+        "sequence_layers": 3,
+        "heads": 4,
+        "atom_layers": 1,
+        "backbone_layers": 3,
+        "aa_layers": 2,
+        "internal_layers": 2,
+        "predictor_layers": 4,
+        "atom_decoder_layers": 2,
+        "predictor_expansion": 2,
+        "relative_positions": 32,
+        "include_chi5": false,
+        "radius_atom": 5.0,
+        "radius_residue": 12.0,
+        "max_neighbors": 24,
+        "sc_context": "spatial",
+        "backend": "reference",
+        "dropout": 0.0,
+        "interaction": "effdock",
+        "effdock_radial_hidden": 96,
+        "effdock_expansion": 2,
+        "effdock_residual_scale": 0.1,
+        "effdock_aggregation": "soft",
+        "effdock_conditioning": true,
+        "effdock_dual_radial": true,
+        "effdock_distance_decay": true,
+        "effdock_norm_rescale": true,
+        "effdock_smooth_cutoff": true,
+        "effdock_directional": true,
+        "effdock_ffn": "bilinear",
+        "effdock_adaptive_cutoff": true
+      },
+      "trainable_parameters": 3337038,
+      "runs": [
+        {
+          "length": 256,
+          "task": "seq_to_bb",
+          "loss": 1.3671101331710815,
+          "finite_backward": true,
+          "seconds": 0.17257978999987245
+        },
+        {
+          "length": 256,
+          "task": "bb_to_seq",
+          "loss": 1.6367857456207275,
+          "finite_backward": true,
+          "seconds": 0.3445700079901144
+        },
+        {
+          "length": 256,
+          "task": "cart_to_internal",
+          "loss": 1.225782036781311,
+          "finite_backward": true,
+          "seconds": 0.3440599470632151
+        },
+        {
+          "length": 256,
+          "task": "internal_to_bb",
+          "loss": 1.3765082359313965,
+          "finite_backward": true,
+          "seconds": 0.1911557560088113
+        },
+        {
+          "length": 256,
+          "task": "sc_to_chi",
+          "loss": 1.4999957084655762,
+          "finite_backward": true,
+          "seconds": 0.3784072120906785
+        },
+        {
+          "length": 256,
+          "task": "chi_to_sc",
+          "loss": 3.6700098514556885,
+          "finite_backward": true,
+          "seconds": 0.5504469570005313
+        },
+        {
+          "length": 256,
+          "task": "sc_infill",
+          "loss": 4.28378438949585,
+          "finite_backward": true,
+          "seconds": 2.8618240649811924
+        },
+        {
+          "length": 256,
+          "task": "bb_infill",
+          "loss": 3.577805519104004,
+          "finite_backward": true,
+          "seconds": 0.31303559395018965
+        },
+        {
+          "length": 256,
+          "task": "aa_infill",
+          "loss": 4.2548089027404785,
+          "finite_backward": true,
+          "seconds": 2.073600249015726
+        }
+      ]
+    }
+  ]
+}

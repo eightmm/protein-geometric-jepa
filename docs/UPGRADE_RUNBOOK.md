@@ -1,6 +1,8 @@
-# v0.2 upgrade runbook
+# Upgrade runbook (v0.2 interaction, v0.3 JEPA)
 
-This release adds `model.interaction: effdock`. Existing configurations keep `baseline`. `backend` independently selects `reference`, `cueq-naive`, or `cueq-cuda`. The new block is wired to BB atoms, SC atoms, BB residues, AA atom fusion and AA residue fusion; sidechains and chi are retained.
+v0.3 changes the JEPA objective and predictor and rejects v0.2 checkpoints (format 2); configurations containing `latent_*`, `circular_channels` or `circular_weight` fail with an explicit message — delete those keys. See [JEPA_V030_KO.md](JEPA_V030_KO.md). `configs/jepa_full_cueq_gpu.yaml` enables every opt-in v0.3 encoder experiment; `scripts/validate_effdock.py --variants effdock-full` checks it.
+
+v0.2 added `model.interaction: effdock`. Existing configurations keep `baseline`. `backend` independently selects `reference`, `cueq-naive`, or `cueq-cuda`. The new block is wired to BB atoms, SC atoms, BB residues, AA atom fusion and AA residue fusion; sidechains and chi are retained.
 
 ## 1. Update and run the analytic reference
 

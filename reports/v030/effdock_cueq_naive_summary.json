@@ -1,0 +1,10 @@
+{
+  "steps": 18,
+  "loss": 4.15093469619751,
+  "seconds": 1.2738956229295582,
+  "backend": "cueq-naive",
+  "interaction": "effdock",
+  "device": "cpu",
+  "world_size": 1,
+  "trainable_parameters": 117769
+}

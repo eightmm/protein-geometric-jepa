@@ -1,4 +1,4 @@
-# CuEquivariance backend contract — v0.2
+# CuEquivariance backend contract — v0.3
 
 ## Architecture and execution backend are independent
 
@@ -10,7 +10,7 @@
 | `cueq-naive` | Actual NVIDIA FCTP/SH, naive method | **CuEq 0.9.0 CPU CI passed**, both architectures |
 | `cueq-cuda` | Actual NVIDIA FCTP fused TP / SH uniform_1d | Implemented; **GPU execution unverified** |
 
-The reference is not a weight-identical replacement for CuEq. Backend selection is explicit and never silently falls back. The EFF-Dock-style block reuses `CuEqMessage` and the common Fiber interface. It does not import docking heads or original O(3) checkpoint weights.
+Since v0.3 the reference contains every Clebsch–Gordan path of (0+1+2)⊗(0+1+2)→(0+1+2), the same path set as the FCTP; v0.2 lacked five of them, so reference-only ablations did not transfer. The reference is still not a weight- or normalization-identical replacement for CuEq. Backend selection is explicit and never silently falls back. The EFF-Dock-style block reuses `CuEqMessage` and the common Fiber interface. It does not import docking heads or original O(3) checkpoint weights.
 
 ## Representation bridge
 
