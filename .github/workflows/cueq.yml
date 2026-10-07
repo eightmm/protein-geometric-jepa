@@ -1,0 +1,26 @@
+name: Optional CuEq CPU verification
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  cueq-naive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install -e '.[dev,cueq]'
+      - run: python -m pip freeze > cueq-environment.txt
+      - run: python -m pytest tests/test_cueq.py -m 'not cuda' -q --junitxml=cueq.xml
+      - run: python -m protein_jepa.cli demo --config configs/cueq_naive.yaml --output /tmp/protein-jepa-cueq --length 24 --count 4
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cueq-naive-verification
+          path: |
+            cueq.xml
+            cueq-environment.txt
+
