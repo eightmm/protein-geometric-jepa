@@ -217,6 +217,9 @@ class EffDockInteractionBlock(nn.Module):
             raise ValueError('residual_scale must be in (0,1].')
         if ffn not in {'bilinear', 'gate'}:
             raise ValueError(f'Unknown effdock FFN: {ffn}')
+        if adaptive_cutoff and aggregation == 'degree':
+            raise ValueError('adaptive_cutoff needs soft/gate aggregation: a discrete degree '
+                             'denominator jumps when a bonded neighbour leaves the top-k set.')
         self.dims, self.cutoff, self.aggregation = dims, float(cutoff), aggregation
         self.stage, self.conditional = stage, conditional
         self.dual_radial, self.distance_decay = dual_radial, distance_decay

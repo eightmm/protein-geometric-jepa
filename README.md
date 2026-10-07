@@ -14,7 +14,7 @@ v0.2를 실행해 확인한 결함을 고쳤습니다.
 - Mask는 겹치지 않는 multi-block span입니다. Task는 sample마다 섞이고, EMA는 schedule을 따릅니다.
 - Reference message가 CG 경로 전체를 갖습니다.
 
-Encoder 확장 네 가지(`sc_context: spatial`, `effdock_directional`, `effdock_ffn: bilinear`, `effdock_adaptive_cutoff`)는 opt-in 실험입니다. 네 가지를 모두 켠 설정은 `configs/jepa_full_cueq_gpu.yaml`입니다. **v0.2 checkpoint는 읽지 않습니다.** 계획 단계에서 Codex, Claude, Antigravity council의 검토를 거쳤습니다. 근거와 검증 범위는 [JEPA_V030_KO.md](docs/JEPA_V030_KO.md)에 있습니다. CPU에서 165 passed / 2 CUDA skips이고, 실제 CuEq 0.9.0 CPU 테스트도 실행되었습니다. GPU 학습과 품질 향상은 아직 검증하지 않았습니다.
+Encoder 확장 네 가지(`sc_context: spatial`, `effdock_directional`, `effdock_ffn: bilinear`, `effdock_adaptive_cutoff`)는 opt-in 실험입니다. 네 가지를 모두 켠 설정은 `configs/jepa_full_cueq_gpu.yaml`입니다. **v0.2 checkpoint는 읽지 않습니다.** 계획 단계에서 Codex, Claude, Antigravity council의 검토를 거쳤습니다. 근거와 검증 범위는 [JEPA_V030_KO.md](docs/JEPA_V030_KO.md)에 있습니다. CPU에서 171 passed / 2 CUDA skips이고, 실제 CuEq 0.9.0 CPU 테스트도 실행되었습니다. GPU 학습과 품질 향상은 아직 검증하지 않았습니다.
 
 ## v0.2: EFF-Dock-inspired CuEq interaction
 

@@ -123,6 +123,8 @@ def test_block_deep_backward_equivariance(aggregation, extensions):
     ids = torch.arange(6)
     bonds = torch.empty(2, 0, dtype=torch.long)
     g = make_graph(x, ids, ids, bonds, node_kind=torch.full_like(ids, 2))
+    if aggregation == 'degree' and extensions:
+        extensions = {**extensions, 'adaptive_cutoff': False}  # unsupported pair
     layers = torch.nn.ModuleList(EffDockInteractionBlock(d, aggregation=aggregation,
                                                         radial_hidden=24, **extensions)
                                  for _ in range(8))
@@ -181,6 +183,40 @@ def test_effdock_checkpoint_exact_resume_and_architecture_rejection(tiny_cfg, tm
         torch.testing.assert_close(a['model'][key], b['model'][key], atol=0, rtol=0)
     with pytest.raises(ValueError, match='model configuration'):
         train(tiny_cfg, training, dataset, tmp_path/'bad', resume=tmp_path/'resume/last.pt')
+
+
+def test_degree_aggregation_rejects_adaptive_cutoff():
+    with pytest.raises(ValueError, match='adaptive_cutoff'):
+        EffDockInteractionBlock(FiberDims(8, 4, 2), aggregation='degree', adaptive_cutoff=True)
+
+
+def test_resume_rejects_removed_training_keys(tiny_cfg, tmp_path):
+    training = TrainConfig(steps=2, batch_size=1, crop_lengths=[10], threads=1)
+    dataset = SyntheticDataset(2, 12, 17)
+    train(tiny_cfg, training, dataset, tmp_path/'r', stop_after=1)
+    path = tmp_path/'r/last.pt'
+    payload = load_checkpoint(path)
+    payload['train_config']['circular_weight'] = 0.02
+    torch.save(payload, path)
+    with pytest.raises(ValueError, match='removed in v0.3'):
+        train(tiny_cfg, training, dataset, tmp_path/'r', resume=path)
+
+
+def test_spatial_mask_mode_warns():
+    with pytest.warns(UserWarning, match='leak'):
+        TrainConfig(mask_mode='spatial')
+
+
+def test_ablation_writer_accepts_every_shipped_gpu_preset(tmp_path):
+    import subprocess, sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    for preset in ('effdock_cueq_gpu.yaml', 'jepa_full_cueq_gpu.yaml'):
+        out = tmp_path/preset
+        subprocess.run([sys.executable, str(root/'scripts/make_effdock_ablations.py'),
+                        '--base', str(root/'configs'/preset), '--output', str(out), '--seeds', '1'],
+                       check=True, capture_output=True)
+        assert len(list(out.glob('*.yaml'))) == 19
 
 
 def test_format1_checkpoint_rejected(tiny_cfg, tmp_path):

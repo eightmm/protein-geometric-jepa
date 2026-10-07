@@ -102,13 +102,13 @@ Variance floor는 정규화하기 전의 online context scalar에 적용합니�
   - CuEq 테스트에 빠진 atom 격리 단언문
 - 받아들이지 않은 지적은 하나입니다. 관측 atom이 없을 때 atom decoder를 건너뛰자는 제안입니다. 그렇게 하면 query 실행 여부가 teacher의 관측 여부에 좌우되어 정보 경계가 약해집니다.
 
-각 결함에는 회귀 테스트를 붙였습니다. 수정을 되돌리면 실패하는 것도 확인했습니다. 남은 쟁점은 thread `jepa-v030-plan`에 기록했습니다.
+각 결함에는 회귀 테스트를 붙였습니다. 수정을 되돌리면 실패하는 것도 확인했습니다. 고친 diff로 Codex gate를 다시 실행하자 새 결함 두 가지가 나왔습니다. 하나는 resume 경로가 저장된 training config를 검사 없이 비교한 문제입니다. 다른 하나는 full preset을 기준으로 ablation을 생성하면 `degree`와 적응 cutoff가 충돌한 문제입니다. 두 가지를 고친 뒤 세 번째 gate에서 **pass**(confidence 0.87)를 받았습니다. 남은 쟁점은 thread `jepa-v030-plan`에 기록했습니다.
 
 ## 7. 검증 증거
 
 증거는 [`reports/v030/`](../reports/v030/)에 있습니다. CPU에서 PyTorch 2.14.1을 썼고, CuEq 0.9.0은 CPU에서만 실행했습니다.
 
-- 전체 pytest: **165 passed, 2 skipped**. Skip 2개는 CUDA GPU가 필요한 테스트입니다. 실제 CuEq CPU 테스트 8개는 실행되었습니다(`-m 'not cuda'`: 8 passed).
+- 전체 pytest: **171 passed, 2 skipped**. Skip 2개는 CUDA GPU가 필요한 테스트입니다. 실제 CuEq CPU 테스트 8개는 실행되었습니다(`-m 'not cuda'`: 8 passed).
 - Smoke demo 18 step 4종이 완료되었습니다. 대상은 baseline reference, effdock reference, baseline CuEq-naive, effdock CuEq-naive입니다.
 - 2-process Gloo DDP 18 step이 완료되었습니다(batch 2, 한 step 안에서 task가 섞이는 설정). 리뷰 반영 전에는 batch 1 설정도 통과했습니다.
 - 128/256 residue 검증: baseline, effdock, effdock-full × 9 task, 총 54회 forward/backward가 모두 finite였습니다.

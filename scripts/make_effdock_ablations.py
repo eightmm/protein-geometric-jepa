@@ -18,7 +18,9 @@ def main():
         'baseline': {'interaction': 'baseline'},
         'effdock_soft': {'interaction': 'effdock', 'effdock_aggregation': 'soft'},
         'effdock_gate': {'interaction': 'effdock', 'effdock_aggregation': 'gate'},
-        'effdock_degree': {'interaction': 'effdock', 'effdock_aggregation': 'degree'},
+        # Degree aggregation is incompatible with the adaptive envelope (SPEC 12).
+        'effdock_degree': {'interaction': 'effdock', 'effdock_aggregation': 'degree',
+                           'effdock_adaptive_cutoff': False},
         'no_dual_radial': {'interaction': 'effdock', 'effdock_dual_radial': False},
         'no_conditioning': {'interaction': 'effdock', 'effdock_conditioning': False},
         'no_norm_rescale': {'interaction': 'effdock', 'effdock_norm_rescale': False},

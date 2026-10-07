@@ -14,7 +14,7 @@ import torch
 from torch import distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from .models.jepa import ProteinJEPA
-from .config import model_config
+from .config import model_config, train_config
 from .data.records import random_crop
 from .geometry.primitives import random_rotation
 from .objectives.tasks import TASKS, make_observation
@@ -82,7 +82,8 @@ def train(model_cfg, train_cfg, dataset, output, resume=None, stop_after=None):
         if payload['fingerprint'] != dataset.fingerprint or payload['world_size'] != world:
             raise ValueError("Resume requires the same dataset manifest and world size.")
         ignore = {'device', 'threads', 'save_every', 'log_every'}
-        current, previous = asdict(train_cfg), payload['train_config']
+        # Checked load: removed (v0.2) or unknown keys fail with an explanation.
+        current, previous = asdict(train_cfg), asdict(train_config(payload['train_config']))
         if any(current[k] != previous.get(k) for k in current.keys()-ignore):
             raise ValueError("Resume training configuration changed. Keep planned steps/tasks/seed unchanged.")
         model.load_state_dict(payload['model'])
