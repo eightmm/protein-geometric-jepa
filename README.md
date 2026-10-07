@@ -106,16 +106,22 @@ protein-jepa encode --checkpoint runs/smoke/last.pt \
 | [TRAINING.md](docs/TRAINING.md) | 단일 장치/DDP/Slurm, resume, 평가 |
 | [API.md](docs/API.md) | Encoder/downstream 출력과 예제 |
 | [VALIDATION.md](docs/VALIDATION.md) | 실제 테스트 결과와 검증 범위 |
-| [PUBLICATION.md](docs/PUBLICATION.md) | 새 private GitHub 게시 절차 |
+| [PUBLICATION.md](docs/PUBLICATION.md) | GitHub 게시 상태, 원본 검증 및 사용 방법 |
 | [STATUS.md](docs/STATUS.md) | 구현됨·검증됨·미검증·후속 연구 구분 |
 | [REFERENCES.md](docs/REFERENCES.md) | 1차 출처와 확인 범위 |
 
-## GitHub 게시
+## GitHub 저장소
 
-이 패키지는 원격 저장소 생성과 별개로 완성된 로컬 Git 프로젝트입니다. GitHub CLI가 인증된 컴퓨터에서 다음을 실행하면 **새 private 저장소를 생성하고** 소스를 게시합니다. 기존 저장소가 있으면 멈추며 force-push하지 않습니다.
+코드·명세·테스트가 [eightmm/protein-geometric-jepa](https://github.com/eightmm/protein-geometric-jepa)의 `main`에 게시되어 있습니다.
 
 ```bash
-python scripts/publish_github.py --repo eightmm/protein-geometric-jepa
+git clone https://github.com/eightmm/protein-geometric-jepa.git
+cd protein-geometric-jepa
+python -m pip install -e '.[dev]'
+pytest -q
+protein-jepa demo --config configs/smoke.yaml --output runs/smoke
 ```
 
-원격 생성/게시를 수행하지 않은 상태에서는 GitHub URL을 완료된 결과처럼 표시하지 않습니다. 원본 `eightmm/plmol`은 수정하지 않습니다. 공개 라이선스는 소유자의 결정을 위해 설정하지 않았으며 게시 기본값은 private입니다.
+원본 v0.1.0의 76개 파일은 [초기 소스 import 커밋](https://github.com/eightmm/protein-geometric-jepa/commit/2b2ee750edd53c3d1e5b836b77d71d63b0b370e1)에 byte-identical하게 보존했습니다. 이후 게시 안내와 재검증 로그를 별도 커밋으로 정리했습니다. [게시 전 재검증](reports/publication_pytest.txt)은 CPU에서 **72 passed, 3 skipped**이며, 실제 원격 CI 결과는 [Actions](https://github.com/eightmm/protein-geometric-jepa/actions)에서 커밋별로 확인합니다.
+
+이 저장소는 사용자가 생성한 **public** 설정을 유지했습니다. 원본 `eightmm/plmol`은 수정하지 않았습니다. 공개 라이선스는 소유자의 결정을 위해 설정하지 않았습니다. `scripts/publish_github.py`는 **다른 새 private 저장소 생성용 보조 도구**이며, 이미 게시된 이 저장소에서 다시 실행할 필요가 없습니다.

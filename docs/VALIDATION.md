@@ -23,7 +23,8 @@
 | 2-rank CPU/Gloo, 9 tasks | 통과 | [DDP log](../reports/ddp_cpu_all_tasks.log) |
 | Editable installation / CLI entry point | 통과 | [install log](../reports/package_install.log), [help](../reports/cli_help.txt) |
 | CuEq naive / CUDA | 실행하지 못함; 3 tests skipped | package/GPU 부재 |
-| Remote GitHub creation / push | 실행하지 못함 | repo-creation action 및 로컬 인증 gh 부재 |
+| Remote source import | 사용자 생성 저장소에 게시 완료, 원본 76파일 tree 일치 | [import commit](https://github.com/eightmm/protein-geometric-jepa/commit/2b2ee750edd53c3d1e5b836b77d71d63b0b370e1) |
+| 게시 전 CPU 재검증 | 72 passed / 3 skipped | [publication_pytest.txt](../reports/publication_pytest.txt) |
 
 ## 환경
 
@@ -63,7 +64,7 @@ torchrun --standalone --nproc_per_node=2 -m protein_jepa.cli demo \
   --config configs/your_ddp_smoke.yaml --output runs/local_ddp --length 10 --count 4
 ```
 
-원격 Actions workflow는 작성되어 있지만, 아직 repository를 게시하지 않아 실행 결과가 없습니다. 로컬 결과를 GitHub CI가 통과한 것처럼 해석하지 마세요.
+원격에 게시한 뒤 CPU Actions workflow가 실행되기 시작했습니다. 실제 커밋별 결과는 [Actions](https://github.com/eightmm/protein-geometric-jepa/actions)에서 확인합니다. 이 문서의 로컬 결과를 GitHub CI의 결과로 대신 해석하지 마세요.
 
 ## 이 결과가 보장하지 않는 것
 

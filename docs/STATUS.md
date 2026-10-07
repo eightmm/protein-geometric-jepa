@@ -42,7 +42,7 @@
 | CuEq CUDA backend | 실제 fused_tp/uniform_1d 선택 구현, GPU 및 ops package 부재로 미실행 |
 | GPU/NCCL DDP | CLI/torchrun/Slurm 경로 준비, 미실행 |
 | Slurm script | 실행 예제 작성, 실제 cluster에 제출하지 않음 |
-| GitHub Actions | Workflow 작성, 원격 repository가 없어 실행하지 않음 |
+| GitHub Actions | 게시 후 CPU workflow 실행 시작; 커밋별 결과는 [Actions](https://github.com/eightmm/protein-geometric-jepa/actions)에서 확인 |
 | PLMol 실물 package adapter | ParsedAtom contract와 fake parser 테스트, 설치된 PLMol 통합은 미실행 |
 | GitHub publication script | Dry run/입력 검증만 실행, 실제 생성·push는 하지 않음 |
 | Python 3.11/3.12 | 지원 대상으로 CI matrix 작성; 현재 로컬 실행은 Python 3.13 |
@@ -67,6 +67,8 @@ Geometry-aware latent가 실제로 이득이 있는지, SC/AA 공동학습 이�
 
 ## 원격 상태
 
-이 배포물은 로컬 Git 저장소와 소스 아카이브입니다. **사용자의 GitHub에 새 repository는 아직 생성되지 않았습니다.** 현재 연결 도구에는 새 repository 생성 action이 없으며, 기존 `eightmm/plmol`을 대체 대상으로 수정하지 않았습니다.
+[eightmm/protein-geometric-jepa](https://github.com/eightmm/protein-geometric-jepa)의 `main`에 게시했습니다. 원본 76개 파일의 source import commit은 `2b2ee75`이며 Git tree hash가 원본 bundle과 일치합니다. 게시 전 [CPU 재검증](../reports/publication_pytest.txt)도 **72 passed, 3 skipped**로 재현했습니다.
 
-[게시 안내](PUBLICATION.md)를 통해 새 private 저장소에 게시할 수 있습니다. 공개 라이선스는 소유자의 결정을 위해 설정하지 않았습니다.
+원격 Actions 실행과 로컬 검증 로그는 구분합니다. 이 문서에 기재한 CuEq/GPU 및 downstream 미검증 범위는 원격에 파일을 올렸다는 이유만으로 달라지지 않습니다. 실제 CI 결과는 [Actions](https://github.com/eightmm/protein-geometric-jepa/actions)에서 확인합니다.
+
+사용자가 만든 public 설정을 유지했으며 원본 `eightmm/plmol`은 수정하지 않았습니다. 공개 라이선스는 소유자의 결정을 위해 설정하지 않았습니다. [게시 이력](PUBLICATION.md)에 import 검증과 사용 방법을 기록했습니다.
