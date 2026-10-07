@@ -1,0 +1,1 @@
+"""Protein JEPA components."""

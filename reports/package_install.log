@@ -1,0 +1,14 @@
+WARNING: The directory '/home/oai/.cache/pip' or its parent directory is not owned or is not writable by the current user. The cache has been disabled. Check the permissions and owner of that directory. If executing pip with sudo, you should use sudo's -H flag.
+Obtaining file:///mnt/data/protein-geometric-jepa
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: protein-geometric-jepa
+  Building editable for protein-geometric-jepa (pyproject.toml): started
+  Building editable for protein-geometric-jepa (pyproject.toml): finished with status 'done'
+  Created wheel for protein-geometric-jepa: filename=protein_geometric_jepa-0.1.0-0.editable-py3-none-any.whl size=5085 sha256=9dc74ee7ecc484fa90246f772e41907f1572ed399ab34d19973afb72376c1f35
+  Stored in directory: /tmp/pip-ephem-wheel-cache-m2_ks5mc/wheels/ab/62/4a/39aaa59744d28e80587adab712c5590a70fbbb5cbb94ec8b6b
+Successfully built protein-geometric-jepa
+Installing collected packages: protein-geometric-jepa
+Successfully installed protein-geometric-jepa-0.1.0

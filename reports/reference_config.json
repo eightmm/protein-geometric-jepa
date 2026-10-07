@@ -1,0 +1,61 @@
+{
+  "model": {
+    "scalar": 16,
+    "vector": 4,
+    "tensor": 2,
+    "sequence_width": 32,
+    "sequence_layers": 1,
+    "heads": 4,
+    "atom_layers": 1,
+    "backbone_layers": 1,
+    "aa_layers": 1,
+    "internal_layers": 1,
+    "latent_scalar": 16,
+    "latent_vector": 4,
+    "latent_tensor": 2,
+    "circular_channels": 4,
+    "include_chi5": false,
+    "radius_atom": 5.0,
+    "radius_residue": 12.0,
+    "max_neighbors": 24,
+    "backend": "reference",
+    "dropout": 0.0
+  },
+  "training": {
+    "steps": 18,
+    "batch_size": 2,
+    "learning_rate": 0.0003,
+    "weight_decay": 0.01,
+    "ema": 0.99,
+    "grad_clip": 1.0,
+    "crop_lengths": [
+      16,
+      24
+    ],
+    "mask_fraction": 0.35,
+    "rigid_augmentation": true,
+    "translation_std": 1.0,
+    "global_weight": 0.1,
+    "atom_weight": 0.2,
+    "variance_weight": 0.05,
+    "covariance_weight": 0.005,
+    "circular_weight": 0.02,
+    "seed": 17,
+    "save_every": 9,
+    "log_every": 1,
+    "device": "cpu",
+    "threads": 2,
+    "allow_observed_order": false,
+    "tasks": [
+      "seq_to_bb",
+      "bb_to_seq",
+      "cart_to_internal",
+      "internal_to_bb",
+      "sc_to_chi",
+      "chi_to_sc",
+      "sc_infill",
+      "bb_infill",
+      "aa_infill"
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "python": "3.13.5",
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+  "torch": "2.10.0+cpu",
+  "cuda_available": false,
+  "torch_cuda_build": null,
+  "packages": {
+    "numpy": "2.3.5",
+    "PyYAML": "6.0.3",
+    "biopython": "1.86",
+    "pytest": "9.0.2",
+    "setuptools": "82.0.1"
+  },
+  "cuequivariance_installed": false,
+  "cuequivariance_torch_installed": false,
+  "gh_executable_available": false,
+  "verification_scope": "Reference CPU only; actual CuEq packages and GPU are absent."
+}

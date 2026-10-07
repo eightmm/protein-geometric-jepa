@@ -1,0 +1,17 @@
+
+*****************************************
+Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed.
+*****************************************
+SYNTHETIC SMOKE DATA: not physically validated and not a scientific benchmark.
+SYNTHETIC SMOKE DATA: not physically validated and not a scientific benchmark.
+[Gloo] Rank 0 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
+[Gloo] Rank 1 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
+{"step": 1, "task": "seq_to_bb", "loss": 0.09746284782886505, "grad_norm": 0.24086840450763702}
+{"step": 2, "task": "bb_to_seq", "loss": 0.14115816354751587, "grad_norm": 0.49990448355674744}
+{"step": 3, "task": "cart_to_internal", "loss": 0.958867073059082, "grad_norm": 3.3051462173461914}
+{"step": 4, "task": "internal_to_bb", "loss": 0.09370163828134537, "grad_norm": 0.21028611063957214}
+{"step": 5, "task": "sc_to_chi", "loss": 0.7159634828567505, "grad_norm": 2.855652332305908}
+{"step": 6, "task": "chi_to_sc", "loss": 0.08753910660743713, "grad_norm": 0.325590044260025}
+{"step": 7, "task": "sc_infill", "loss": 0.2305849939584732, "grad_norm": 0.7704413533210754}
+{"step": 8, "task": "bb_infill", "loss": 0.09693532437086105, "grad_norm": 0.20623350143432617}
+{"step": 9, "task": "aa_infill", "loss": 0.22248545289039612, "grad_norm": 0.7607887387275696}

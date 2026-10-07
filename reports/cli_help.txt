@@ -1,0 +1,11 @@
+usage: protein-jepa [-h]
+                    {prepare,demo,train,encode,audit-manifest,evaluate} ...
+
+Commands: prepare, demo, train, encode, evaluate, audit-manifest.
+
+positional arguments:
+  {prepare,demo,train,encode,audit-manifest,evaluate}
+    prepare             Read a one-chain PDB/mmCIF and write a numeric NPZ.
+
+options:
+  -h, --help            show this help message and exit

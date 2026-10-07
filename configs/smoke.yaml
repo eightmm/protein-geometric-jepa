@@ -1,0 +1,24 @@
+model:
+  scalar: 16
+  vector: 4
+  tensor: 2
+  sequence_width: 32
+  sequence_layers: 1
+  heads: 4
+  atom_layers: 1
+  backbone_layers: 1
+  aa_layers: 1
+  internal_layers: 1
+  latent_scalar: 16
+  latent_vector: 4
+  latent_tensor: 2
+  circular_channels: 4
+  backend: reference
+training:
+  steps: 18
+  batch_size: 2
+  crop_lengths: [16, 24]
+  learning_rate: 0.0003
+  device: cpu
+  log_every: 1
+  save_every: 9

@@ -1,0 +1,2 @@
+{"path":"protein_train.npz","split":"train","cluster_id":"REPLACE_WITH_ACTUAL_TRAIN_CLUSTER"}
+{"path":"protein_val.npz","split":"val","cluster_id":"REPLACE_WITH_DISTINCT_HELD_OUT_CLUSTER"}

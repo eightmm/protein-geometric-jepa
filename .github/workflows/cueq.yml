@@ -23,4 +23,3 @@ jobs:
           path: |
             cueq.xml
             cueq-environment.txt
-
