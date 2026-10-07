@@ -11,7 +11,7 @@ from ..geometry.features import backbone_features, chi_features
 from ..geometry.primitives import normalize
 from .fibers import (Fiber, FiberDims, FiberLinear, FiberActivation, DirectionSeed,
                      GlobalReadout, scatter_fiber, cat_fibers)
-from .equivariant import EquivariantBlock
+from .equivariant import make_geometry_block
 
 
 def position_encoding(position: Tensor, width: int):
@@ -102,7 +102,7 @@ class AtomStem(nn.Module):
         self.embedding = nn.Embedding(4 if backbone_only else 6, cfg.scalar)
         self.distance_embed = nn.Sequential(nn.Linear(1, cfg.scalar), nn.SiLU(), nn.Linear(cfg.scalar, cfg.scalar))
         self.seed = DirectionSeed(1, cfg.dims)
-        self.layers = nn.ModuleList(EquivariantBlock(cfg.dims, cfg.backend) for _ in range(cfg.atom_layers))
+        self.layers = nn.ModuleList(make_geometry_block(cfg, 0 if backbone_only else 1, atom=True) for _ in range(cfg.atom_layers))
         self.register_buffer("elements", torch.tensor(ATOM_ELEMENT))
         self.pool_score = nn.Linear(cfg.scalar, 1)
 
@@ -129,7 +129,8 @@ class AtomStem(nn.Module):
             atom = self.seed(s, unit[:, None])
             bonds = atom_bonds(record, ri, ai, self.backbone_only)
             graph = make_graph(x, ri, record.seq_pos, bonds, self.cfg.radius_atom,
-                               self.cfg.max_neighbors, local_only=True)
+                               self.cfg.max_neighbors, local_only=True,
+                               node_kind=torch.full_like(ri, 0 if self.backbone_only else 1))
             for layer in self.layers:
                 atom = layer(atom, graph)
         weight = self.pool_score(atom.s).squeeze(-1).sigmoid()
@@ -145,7 +146,7 @@ class BackboneEncoder(nn.Module):
         self.atom_stem = AtomStem(cfg, backbone_only=True)
         self.internal_stem = nn.Sequential(nn.Linear(18, cfg.scalar), nn.SiLU(), nn.Linear(cfg.scalar, cfg.scalar))
         self.seed = DirectionSeed(9, cfg.dims)
-        self.layers = nn.ModuleList(EquivariantBlock(cfg.dims, cfg.backend) for _ in range(cfg.backbone_layers))
+        self.layers = nn.ModuleList(make_geometry_block(cfg, 2) for _ in range(cfg.backbone_layers))
         self.atom_feedback = FiberLinear(cfg.dims, cfg.dims)
         self.readout = GlobalReadout(cfg.dims)
 
@@ -179,8 +180,8 @@ class AllAtomFusion(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.bb_map, self.sc_map = FiberLinear(cfg.dims, cfg.dims), FiberLinear(cfg.dims, cfg.dims)
-        self.atom_layers = nn.ModuleList(EquivariantBlock(cfg.dims, cfg.backend) for _ in range(cfg.aa_layers))
-        self.res_layer = EquivariantBlock(cfg.dims, cfg.backend)
+        self.atom_layers = nn.ModuleList(make_geometry_block(cfg, 3, atom=True) for _ in range(cfg.aa_layers))
+        self.res_layer = make_geometry_block(cfg, 4)
         self.feedback = FiberLinear(cfg.dims, cfg.dims)
         self.activation = FiberActivation(cfg.dims)
         self.readout = GlobalReadout(cfg.dims)
@@ -193,7 +194,8 @@ class AllAtomFusion(nn.Module):
         atom = cat_fibers([bb.atoms, sc.atoms])
         atom = atom + self.feedback(initial.index(ri))
         graph = make_graph(record.xyz[ri, ai], ri, record.seq_pos,
-                           atom_bonds(record, ri, ai, False), self.cfg.radius_atom, self.cfg.max_neighbors)
+                           atom_bonds(record, ri, ai, False), self.cfg.radius_atom, self.cfg.max_neighbors,
+                           node_kind=(ai >= 4).long())
         for layer in self.atom_layers:
             atom = layer(atom, graph)
         nodes = scatter_fiber(atom, ri, len(record)) + initial

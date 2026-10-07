@@ -1,0 +1,32 @@
+# v0.2 EFF-Dock-inspired SO(3) JEPA; new weights required.
+model:
+  backend: cueq-cuda
+  scalar: 96
+  vector: 24
+  tensor: 12
+  sequence_width: 384
+  sequence_layers: 6
+  heads: 8
+  atom_layers: 2
+  backbone_layers: 4
+  aa_layers: 2
+  internal_layers: 2
+  latent_scalar: 128
+  latent_vector: 16
+  latent_tensor: 8
+  circular_channels: 16
+  geometry_block: effdock
+  eff_aggregation: soft
+  eff_conditional: true
+  eff_residual_scale: 0.1
+training:
+  steps: 100000
+  batch_size: 2
+  crop_lengths:
+  - 128
+  - 256
+  device: cuda
+  ema: 0.996
+  save_every: 1000
+  log_every: 20
+  allow_observed_order: false

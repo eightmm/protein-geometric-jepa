@@ -1,25 +1,34 @@
-name: Optional CuEq CPU verification
+name: CuEq CPU and EFF-Dock blocks
 on:
+  push:
+  pull_request:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: cueq-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   cueq-naive:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-      - run: python -m pip install -e '.[dev,cueq]'
-      - run: python -m pip freeze > cueq-environment.txt
-      - run: python -m pytest tests/test_cueq.py -m 'not cuda' -q --junitxml=cueq.xml
-      - run: python -m protein_jepa.cli demo --config configs/cueq_naive.yaml --output /tmp/protein-jepa-cueq --length 24 --count 4
+      - run: python -m pip install 'torch==2.10.0' --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install -e '.[dev]' 'cuequivariance==0.9.0' 'cuequivariance-torch==0.9.0'
+      - name: Verify actual CuEq import (missing packages must fail this job)
+        run: python -c "import cuequivariance, cuequivariance_torch; import importlib.metadata as m; print({n:m.version(n) for n in ['torch','cuequivariance','cuequivariance-torch']})"
+      - run: python -m pytest -q --junitxml=cueq-pytest.xml
+      - run: python -m protein_jepa.cli demo --config configs/effdock_naive.yaml --output /tmp/effdock-jepa-naive --length 32 --count 4
+      - run: python scripts/compare_geometry_blocks.py --backend cueq-naive --lengths 32 --repeats 2 --output cueq-cost.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: cueq-naive-verification
+          name: cueq-naive-validation
           path: |
-            cueq.xml
-            cueq-environment.txt
+            cueq-pytest.xml
+            cueq-cost.json
+            /tmp/effdock-jepa-naive/summary.json

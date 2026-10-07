@@ -1,0 +1,15 @@
+# v0.2 EFF-Dock-inspired SO(3) JEPA; new weights required.
+model:
+  backend: reference
+  geometry_block: effdock
+  eff_aggregation: soft
+  eff_conditional: true
+  eff_residual_scale: 0.1
+training:
+  steps: 10000
+  batch_size: 2
+  crop_lengths:
+  - 128
+  - 256
+  device: cpu
+  allow_observed_order: false

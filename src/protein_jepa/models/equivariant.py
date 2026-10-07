@@ -70,3 +70,16 @@ class EquivariantBlock(nn.Module):
             pooled = scatter_fiber(msg, dst, len(h.s))
             h = h + pooled.scale(0.5)
         return self.activation(h)
+
+
+def make_geometry_block(cfg, stage: int = 0, atom: bool = False):
+    """Keep v0.1 checkpoints/defaults unchanged; opt into the v0.2 architecture."""
+    if cfg.geometry_block == "legacy":
+        return EquivariantBlock(cfg.dims, cfg.backend)
+    from .effdock_blocks import EffDockInteractionBlock
+    return EffDockInteractionBlock(
+        cfg.dims, cfg.backend, radial_hidden=cfg.eff_radial_hidden,
+        edge_dim=cfg.eff_edge_dim, cutoff=cfg.radius_atom if atom else cfg.radius_residue,
+        dropout=cfg.dropout, expansion=cfg.eff_expansion,
+        residual_scale=cfg.eff_residual_scale, aggregation=cfg.eff_aggregation,
+        stage=stage, conditional=cfg.eff_conditional)

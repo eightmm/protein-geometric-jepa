@@ -7,12 +7,18 @@ from .constants import AA3, ATOM_ID, SC_BONDS
 from ..geometry.primitives import normalize
 
 
+# Node kinds: backbone atom=0, sidechain atom=1, residue=2.
+# Directed edge type: 2*(3*src_kind+dst_kind) + is_covalent_or_polymer.
+NUM_EDGE_TYPES = 18
+
+
 @dataclass
 class Graph:
     edge_index: Tensor   # [2,E], src -> dst
     distance: Tensor
     direction: Tensor
     relation: Tensor     # [E,3], same_residue, signed_seq_sep/32, bond
+    edge_type: Tensor | None = None
 
 
 def atom_bonds(record: ProteinRecord, residues: Tensor, slots: Tensor, backbone_only=False) -> Tensor:
@@ -38,7 +44,8 @@ def atom_bonds(record: ProteinRecord, residues: Tensor, slots: Tensor, backbone_
 
 def make_graph(x: Tensor, residue_index: Tensor, seq_pos: Tensor, bonds: Tensor,
                radius: float = 8.0, max_neighbors: int = 24,
-               local_only: bool = False, chunk_size: int = 256) -> Graph:
+               local_only: bool = False, chunk_size: int = 256,
+               node_kind: Tensor | None = None) -> Graph:
     """At most max_neighbors spatial incoming edges/node, plus explicit bonds.
 
     Edge discovery is deliberately outside autograd. Only visible coordinates
@@ -47,6 +54,11 @@ def make_graph(x: Tensor, residue_index: Tensor, seq_pos: Tensor, bonds: Tensor,
     if radius <= 0 or max_neighbors < 1:
         raise ValueError("radius and max_neighbors must be positive.")
     n = len(x)
+    if node_kind is not None:
+        if node_kind.shape != (n,) or node_kind.dtype != torch.long or node_kind.device != x.device:
+            raise ValueError("node_kind must be long [N] on the coordinate device.")
+        if bool(((node_kind < 0) | (node_kind > 2)).any()):
+            raise ValueError("node_kind codes must be in [0,2].")
     device = x.device
     edges = []
     with torch.no_grad():
@@ -74,12 +86,15 @@ def make_graph(x: Tensor, residue_index: Tensor, seq_pos: Tensor, bonds: Tensor,
     delta = x[dst]-x[src]
     unit, _ = normalize(delta)
     dist = delta.norm(dim=-1)
-    bonded_keys = set((bonds[0]*max(n, 1)+bonds[1]).detach().cpu().tolist())
-    is_bond = torch.tensor([int(a)*max(n, 1)+int(b) in bonded_keys
-                            for a, b in index.T.detach().cpu().tolist()], device=device, dtype=x.dtype)
+    # Device-side membership: no E-sized .tolist()/CPU round trip.
+    edge_keys = src*max(n, 1)+dst
+    bond_keys = bonds[0]*max(n, 1)+bonds[1]
+    is_bond = torch.isin(edge_keys, bond_keys).to(x.dtype)
     same = (residue_index[src] == residue_index[dst]).to(x.dtype)
     sep = (seq_pos[residue_index[dst]]-seq_pos[residue_index[src]]).clamp(-32, 32).to(x.dtype)/32
-    return Graph(index, dist, unit, torch.stack((same, sep, is_bond), dim=-1))
+    edge_type = None if node_kind is None else (
+        2*(3*node_kind[src]+node_kind[dst])+is_bond.long())
+    return Graph(index, dist, unit, torch.stack((same, sep, is_bond), dim=-1), edge_type)
 
 
 def residue_graph(record: ProteinRecord, valid: Tensor, radius=12.0, max_neighbors=24):
@@ -92,5 +107,6 @@ def residue_graph(record: ProteinRecord, valid: Tensor, radius=12.0, max_neighbo
             a, b = int(inverse[i]), int(inverse[i+1])
             bonds.extend(((a, b), (b, a)))
     bonds = torch.tensor(bonds, device=ids.device, dtype=torch.long).reshape(-1, 2).T
-    graph = make_graph(record.xyz[ids, 1], ids, record.seq_pos, bonds, radius, max_neighbors)
+    graph = make_graph(record.xyz[ids, 1], ids, record.seq_pos, bonds, radius, max_neighbors,
+                       node_kind=torch.full_like(ids, 2))
     return ids, graph

@@ -47,3 +47,18 @@ def test_cueq_cuda_end_to_end(tiny_cfg,protein):
     obs=make_observation(rec,'aa_infill',.3,torch.Generator().manual_seed(1))
     loss,_=model([(rec,obs)],TrainConfig()); loss.backward()
     assert torch.isfinite(loss)
+
+
+@pytest.mark.cueq
+@pytest.mark.skipif(not available, reason='CuEq packages are not installed')
+def test_cueq_zero_direction_is_finite_and_equivariant():
+    from protein_jepa.models.cueq_backend import CuEqMessage
+    d = FiberDims(8, 4, 2)
+    layer = CuEqMessage(d, 'cueq-naive')
+    h = Fiber(torch.randn(3, 8), torch.randn(3, 4, 3), symmetric_traceless(torch.randn(3, 2, 3, 3)))
+    u = torch.zeros(3, 3, requires_grad=True)
+    r = random_rotation()
+    a, b = layer(h, u), layer(h.rotate(r), u @ r.T)
+    assert_fiber_close(a.rotate(r), b, atol=2e-4, rtol=2e-4)
+    (a.s.square().sum()+a.v.square().sum()+a.t.square().sum()).backward()
+    assert torch.isfinite(u.grad).all()

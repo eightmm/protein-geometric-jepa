@@ -5,6 +5,8 @@ SphericalHarmonics documentation. This module requires installed CuEq packages.
 The Cartesian/irrep bridge is calibrated from that exact installed SH basis,
 so it does not assume an e3nn convention or reshape a rank-2 tensor incorrectly.
 """
+from functools import lru_cache
+
 import torch
 from torch import nn
 from .fibers import Fiber, FiberDims
@@ -40,21 +42,10 @@ class CuEqMessage(nn.Module):
         )
         self.sh = cuet.SphericalHarmonics([0, 1, 2], normalize=True,
                                          method="naive" if backend == "cueq-naive" else "uniform_1d")
-        # Coordinate-independent change of basis, computed once on CPU.
-        sh_calibrate = cuet.SphericalHarmonics([0, 1, 2], normalize=True, method="naive")
-        u, _ = normalize(torch.tensor([[1.,0.,0.], [0.,1.,0.], [0.,0.,1.], [1.,1.,0.],
-                                      [1.,0.,1.], [0.,1.,1.], [1.,-1.,1.], [1.,1.,-1.]]))
-        with torch.no_grad():
-            y = sh_calibrate(u).double()
-            basis = stf_basis()
-            q = torch.einsum('nij,kij->nk', outer_stf(u).double(), basis)
-            m1 = torch.linalg.lstsq(u.double(), y[:, 1:4]).solution
-            m2 = torch.linalg.lstsq(q, y[:, 4:9]).solution
-            if not torch.allclose(q @ m2, y[:, 4:9], atol=1e-5, rtol=1e-5):
-                raise RuntimeError("Unsupported CuEq spherical-harmonic basis.")
-        for name, value in {"basis": basis, "m1": m1, "m2": m2,
-                            "m1_inv": torch.linalg.inv(m1), "m2_inv": torch.linalg.inv(m2)}.items():
-            self.register_buffer(name, value.float())
+        # Calibration is coordinate-independent, cached on CPU; each module
+        # owns cloned buffers so moving one model cannot mutate the cache.
+        for name, value in calibrated_basis().items():
+            self.register_buffer(name, value.clone())
 
     def pack(self, h: Fiber):
         v = h.v @ self.m1
@@ -68,4 +59,37 @@ class CuEqMessage(nn.Module):
         return Fiber(s, v, torch.einsum('nck,kij->ncij', t, self.basis))
 
     def forward(self, h: Fiber, unit):
-        return self.unpack(self.tp(self.pack(h), self.sh(unit)))
+        # A coincident edge has no direction. Keep Y_0, set Y_{l>0}=0 rather
+        # than feeding 0/0 into spherical harmonics or selecting a world axis.
+        valid = unit.square().sum(-1) > 1e-12
+        safe = torch.where(valid[:, None], unit, unit.new_tensor([1., 0., 0.]))
+        y = self.sh(safe)
+        y = torch.cat((y[:, :1], y[:, 1:]*valid[:, None]), -1)
+        return self.unpack(self.tp(self.pack(h), y))
+
+
+@lru_cache(maxsize=1)
+def calibrated_basis():
+    """Verify both l=1/l=2 conventions with out-of-calibration directions."""
+    import cuequivariance_torch as cuet
+    sh = cuet.SphericalHarmonics([0, 1, 2], normalize=True, method="naive")
+    u, _ = normalize(torch.tensor([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.],
+                                  [1., 1., 0.], [1., 0., 1.], [0., 1., 1.],
+                                  [1., -1., 1.], [1., 1., -1.]]))
+    with torch.no_grad():
+        y = sh(u).double()
+        basis = stf_basis()
+        q = torch.einsum('nij,kij->nk', outer_stf(u).double(), basis)
+        m1 = torch.linalg.lstsq(u.double(), y[:, 1:4], driver='gelsd').solution
+        m2 = torch.linalg.lstsq(q, y[:, 4:9], driver='gelsd').solution
+        holdout, _ = normalize(torch.tensor([[.23, -.91, .72], [-.36, .84, .51],
+                                            [.11, .83, -.67], [-.51, -.17, .82]]))
+        target = sh(holdout).double()
+        quad = torch.einsum('nij,kij->nk', outer_stf(holdout).double(), basis)
+        for actual, expected in ((holdout.double() @ m1, target[:, 1:4]),
+                                 (quad @ m2, target[:, 4:9])):
+            if not torch.allclose(actual, expected, atol=1e-5, rtol=1e-5):
+                raise RuntimeError("Unsupported CuEq spherical-harmonic basis.")
+    return {name: value.float() for name, value in {
+        "basis": basis, "m1": m1, "m2": m2,
+        "m1_inv": torch.linalg.inv(m1), "m2_inv": torch.linalg.inv(m2)}.items()}

@@ -26,6 +26,13 @@ class ModelConfig:
     max_neighbors: int = 24
     backend: str = "reference"
     dropout: float = 0.0
+    geometry_block: str = "legacy"
+    eff_radial_hidden: int = 96
+    eff_edge_dim: int = 16
+    eff_expansion: int = 2
+    eff_residual_scale: float = 0.1
+    eff_aggregation: str = "soft"
+    eff_conditional: bool = True
 
     def __post_init__(self):
         if self.heads < 1 or self.sequence_width < 1:
@@ -44,6 +51,14 @@ class ModelConfig:
             raise ValueError("Graph radii and max_neighbors must be positive.")
         if not 0 <= self.dropout < 1:
             raise ValueError("dropout must be in [0,1).")
+        if self.geometry_block not in {"legacy", "effdock"}:
+            raise ValueError("geometry_block must be legacy or effdock.")
+        if min(self.eff_radial_hidden, self.eff_edge_dim, self.eff_expansion) < 1:
+            raise ValueError("EFF-Dock block widths must be positive.")
+        if self.eff_aggregation not in {"soft", "gate", "degree"}:
+            raise ValueError("Invalid EFF-Dock aggregation.")
+        if not 0 < self.eff_residual_scale <= 1:
+            raise ValueError("eff_residual_scale must be in (0,1].")
         if self.backend not in {"reference", "cueq-naive", "cueq-cuda"}:
             raise ValueError("Invalid backend.")
 
