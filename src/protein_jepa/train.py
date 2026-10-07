@@ -14,6 +14,7 @@ import torch
 from torch import distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from .models.jepa import ProteinJEPA
+from .config import ModelConfig
 from .data.records import random_crop
 from .geometry.primitives import random_rotation
 from .objectives.tasks import TASKS, make_observation
@@ -70,7 +71,7 @@ def train(model_cfg, train_cfg, dataset, output, resume=None, stop_after=None):
     payload = None
     if resume:
         payload = load_checkpoint(resume)
-        if payload['model_config'] != asdict(model_cfg):
+        if asdict(ModelConfig(**payload['model_config'])) != asdict(model_cfg):
             raise ValueError("Resume model configuration differs (including backend).")
         if payload['fingerprint'] != dataset.fingerprint or payload['world_size'] != world:
             raise ValueError("Resume requires the same dataset manifest and world size.")
@@ -146,7 +147,7 @@ def train(model_cfg, train_cfg, dataset, output, resume=None, stop_after=None):
                 save_checkpoint(out/'last.pt', model, optimizer, scheduler, step+1, model_cfg,
                                 train_cfg, rank_states, dataset.fingerprint, world)
     result = {'steps': end, 'loss': last_loss, 'seconds': time.perf_counter()-start_time,
-              'backend': model_cfg.backend, 'device': str(device), 'world_size': world,
+              'backend': model_cfg.backend, 'interaction': model_cfg.interaction, 'device': str(device), 'world_size': world,
               'trainable_parameters': sum(p.numel() for p in model.parameters() if p.requires_grad)}
     if rank == 0:
         (out/'summary.json').write_text(json.dumps(result, indent=2))

@@ -1,3 +1,4 @@
+from dataclasses import replace
 import pytest
 import torch
 from protein_jepa.config import ModelConfig
@@ -23,9 +24,10 @@ def protein():
     return synthetic_record(14, 11)
 
 
-@pytest.fixture
-def model(tiny_cfg):
-    return ProteinJEPA(tiny_cfg).eval()
+@pytest.fixture(params=["baseline", "effdock"])
+def model(tiny_cfg, request):
+    return ProteinJEPA(replace(tiny_cfg, interaction=request.param,
+                              effdock_radial_hidden=24)).eval()
 
 
 def assert_fiber_close(a, b, atol=2e-5, rtol=2e-5):

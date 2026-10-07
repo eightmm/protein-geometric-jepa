@@ -1,21 +1,31 @@
-name: Optional CuEq CPU verification
+name: CuEq CPU correctness
 on:
+  push:
+  pull_request:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   cueq-naive:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install 'cuequivariance==0.9.0' 'cuequivariance-torch==0.9.0'
       - run: python -m pip install -e '.[dev,cueq]'
       - run: python -m pip freeze > cueq-environment.txt
+      # Fail on missing dependency; a skipped suite must not masquerade as CuEq validation.
+      - run: python -c 'import cuequivariance, cuequivariance_torch'
       - run: python -m pytest tests/test_cueq.py -m 'not cuda' -q --junitxml=cueq.xml
-      - run: python -m protein_jepa.cli demo --config configs/cueq_naive.yaml --output /tmp/protein-jepa-cueq --length 24 --count 4
+      - run: python -m protein_jepa.cli demo --config configs/effdock_cueq_naive.yaml --output /tmp/jepa-effdock-cueq --length 24 --count 4
+      - run: python scripts/validate_effdock.py --config configs/effdock_cueq_naive.yaml --variants effdock --lengths 32 --output cueq-smoke.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -23,3 +33,5 @@ jobs:
           path: |
             cueq.xml
             cueq-environment.txt
+            cueq-smoke.json
+            /tmp/jepa-effdock-cueq/summary.json

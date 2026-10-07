@@ -77,9 +77,9 @@ def scatter_fiber(h: Fiber, index: Tensor, n: int, weights: Tensor | None = None
 
 
 class FiberLinear(nn.Module):
-    def __init__(self, di: FiberDims, do: FiberDims):
+    def __init__(self, di: FiberDims, do: FiberDims, *, scalar_bias: bool = True):
         super().__init__()
-        self.s = nn.Linear(di.scalar, do.scalar)
+        self.s = nn.Linear(di.scalar, do.scalar, bias=scalar_bias)
         self.v = nn.Linear(di.vector, do.vector, bias=False)
         self.t = nn.Linear(di.tensor, do.tensor, bias=False)
 

@@ -1,0 +1,184 @@
+"""Regression contracts for the EFF-Dock-inspired interaction architecture."""
+from dataclasses import asdict, replace
+import pytest
+import torch
+from conftest import assert_fiber_close
+from protein_jepa.config import ModelConfig, TrainConfig
+from protein_jepa.models.fibers import Fiber, FiberDims
+from protein_jepa.models.effdock_blocks import (
+    EffDockInteractionBlock, FiberDropout, FiberRMSNorm, ConditionalFiberNorm,
+    StableNormRescale, NormGate, gated_aggregate,
+)
+from protein_jepa.models.jepa import ProteinJEPA
+from protein_jepa.geometry.primitives import random_rotation, symmetric_traceless
+from protein_jepa.data.graphs import Graph, make_graph, NUM_EDGE_TYPES
+from protein_jepa.data.dataset import SyntheticDataset
+from protein_jepa.checkpoint import load_checkpoint
+from protein_jepa.train import train
+
+
+def random_fiber(n=5, dims=FiberDims(8, 4, 2)):
+    return Fiber(torch.randn(n, dims.scalar), torch.randn(n, dims.vector, 3),
+                 symmetric_traceless(torch.randn(n, dims.tensor, 3, 3)))
+
+
+def empty_graph():
+    return Graph(torch.empty(2, 0, dtype=torch.long), torch.empty(0),
+                 torch.empty(0, 3), torch.empty(0, 3), torch.empty(0, dtype=torch.long))
+
+
+@pytest.mark.parametrize('factory', [FiberRMSNorm, NormGate, StableNormRescale])
+def test_degree_operations_equivariant(factory):
+    d = FiberDims(8, 4, 2)
+    h, r = random_fiber(dims=d), random_rotation()
+    layer = factory(d)
+    assert_fiber_close(layer(h).rotate(r), layer(h.rotate(r)))
+
+
+def test_conditioning_and_dropout_equivariant_in_training():
+    d = FiberDims(8, 4, 2)
+    h, r = random_fiber(dims=d), random_rotation()
+    norm = ConditionalFiberNorm(d, 7)
+    torch.nn.init.normal_(norm.modulate.weight, std=.1)
+    context = torch.randn(5, 7)
+    assert_fiber_close(norm(h, context).rotate(r), norm(h.rotate(r), context))
+    dropout = FiberDropout(d, .4).train()
+    torch.manual_seed(123); a = dropout(h).rotate(r)
+    torch.manual_seed(123); b = dropout(h.rotate(r))
+    assert_fiber_close(a, b)
+
+
+def test_zero_norm_rescale_and_gradient():
+    d = FiberDims(8, 4, 2)
+    h = Fiber.zeros(3, d, torch.zeros(1))
+    h.v.requires_grad_(); h.t.requires_grad_()
+    layer = StableNormRescale(d)
+    with torch.no_grad():
+        layer.v_map.bias.fill_(7); layer.t_map.bias.fill_(7)
+    out = layer(h)
+    assert out.v.count_nonzero() == out.t.count_nonzero() == 0
+    (out.v.sum()+out.t.sum()).backward()
+    assert torch.isfinite(h.v.grad).all() and torch.isfinite(h.t.grad).all()
+
+
+@pytest.mark.parametrize('mode', ['soft', 'gate', 'degree'])
+def test_empty_aggregation_and_zero_gate(mode):
+    d = FiberDims(8, 4, 2)
+    out = gated_aggregate(Fiber.zeros(0, d, torch.zeros(1)), torch.empty(0, d.invariant),
+                          torch.empty(0, dtype=torch.long), 3, d, mode)
+    assert out.s.count_nonzero() == out.v.count_nonzero() == out.t.count_nonzero() == 0
+    h = random_fiber(2, d)
+    out = gated_aggregate(h, torch.zeros(2, d.invariant), torch.tensor([0, 0]), 3, d, mode)
+    assert out.s.count_nonzero() == out.v.count_nonzero() == out.t.count_nonzero() == 0
+
+
+def test_soft_aggregation_retains_weak_edge_attenuation():
+    d = FiberDims(1, 1, 1)
+    h = Fiber(torch.ones(1, 1), torch.ones(1, 1, 3), torch.zeros(1, 1, 3, 3))
+    w, dst = torch.full((1, 3), 1e-3), torch.tensor([0])
+    soft = gated_aggregate(h, w, dst, 1, d, 'soft').s.item()
+    gate = gated_aggregate(h, w, dst, 1, d, 'gate').s.item()
+    assert soft < .002 and gate > .99
+
+
+def test_directed_typed_graph_and_legacy_constructor():
+    x = torch.tensor([[0., 0., 0.], [1., 0., 0.], [0., 2., 0.]])
+    ids = torch.arange(3)
+    kinds = torch.tensor([0, 1, 2])
+    bonds = torch.tensor([[0, 1], [1, 0]])
+    g = make_graph(x, ids, ids, bonds, node_kind=kinds)
+    s, t = g.edge_index
+    expected = 1+2*(kinds[s]*3+kinds[t])+g.relation[:, 2].long()
+    assert torch.equal(g.edge_type, expected)
+    assert int(g.edge_type.max()) < NUM_EDGE_TYPES
+    assert g.relation[:, 2].sum() == 2
+    assert Graph(g.edge_index, g.distance, g.direction, g.relation).edge_type is None
+    with pytest.raises(ValueError, match='node_kind'):
+        make_graph(x, ids, ids, bonds, node_kind=torch.tensor([0, 1, 3]))
+
+
+def test_cutoff_zero_edge_equals_absent_edge():
+    d = FiberDims(8, 4, 2)
+    block = EffDockInteractionBlock(d, cutoff=5).eval()
+    # Activate conditioning so the test catches discrete-degree leakage as well.
+    torch.nn.init.normal_(block.ffn_norm.modulate.weight, std=.1)
+    h = random_fiber(2, d)
+    at_cutoff = Graph(torch.tensor([[0], [1]]), torch.tensor([5.]),
+                      torch.tensor([[1., 0., 0.]]), torch.tensor([[0., 1/32, 0.]]))
+    assert_fiber_close(block(h, at_cutoff), block(h, empty_graph()), atol=1e-7, rtol=1e-7)
+    inside = replace(at_cutoff, distance=torch.tensor([4.999]))
+    assert_fiber_close(block(h, inside), block(h, empty_graph()), atol=2e-5, rtol=2e-5)
+    bond = replace(at_cutoff, relation=torch.tensor([[0., 1/32, 1.]]))
+    assert not torch.allclose(block(h, bond).s, block(h, empty_graph()).s)
+
+
+@pytest.mark.parametrize('aggregation', ['soft', 'gate', 'degree'])
+def test_block_deep_backward_equivariance(aggregation):
+    d = FiberDims(8, 4, 2)
+    h, r = random_fiber(6, d), random_rotation()
+    x = torch.randn(6, 3)
+    ids = torch.arange(6)
+    bonds = torch.empty(2, 0, dtype=torch.long)
+    g = make_graph(x, ids, ids, bonds, node_kind=torch.full_like(ids, 2))
+    layers = torch.nn.ModuleList(EffDockInteractionBlock(d, aggregation=aggregation,
+                                                        radial_hidden=24) for _ in range(8))
+    a, b = h, h.rotate(r)
+    for layer in layers:
+        a = layer(a, g)
+        b = layer(b, replace(g, direction=g.direction@r.T))
+    assert_fiber_close(a.rotate(r), b, atol=2e-4, rtol=2e-4)
+    sum(z.square().mean() for z in (a.s, a.v, a.t)).backward()
+    assert all(torch.isfinite(p.grad).all() for p in layers.parameters() if p.grad is not None)
+
+
+def test_stage_wiring_and_all_ablation_switches(tiny_cfg, protein):
+    cfg = replace(tiny_cfg, interaction='effdock', effdock_radial_hidden=24)
+    model = ProteinJEPA(cfg)
+    enc = model.online.encoder
+    stages = [enc.bb.atom_stem.layers[0], enc.sc.stem.layers[0], enc.bb.layers[0],
+              enc.aa.atom_layers[0], enc.aa.res_layer]
+    assert [x.stage for x in stages] == list(range(5))
+    assert all(isinstance(x, EffDockInteractionBlock) for x in stages)
+    cfg = replace(cfg, effdock_conditioning=False, effdock_dual_radial=False,
+                  effdock_distance_decay=False, effdock_norm_rescale=False,
+                  effdock_smooth_cutoff=False, effdock_expansion=1)
+    model = ProteinJEPA(cfg)
+    out = model.online.encoder(protein, ('bb', 'aa'))
+    for view in out.values():
+        assert torch.isfinite(view.nodes.s).all()
+    assert not hasattr(model.online.encoder.bb.layers[0], 'radial_in')
+
+
+@pytest.mark.parametrize('options', [dict(interaction='typo'), dict(effdock_aggregation='typo'),
+    dict(effdock_expansion=0), dict(effdock_radial_hidden=0), dict(effdock_residual_scale=0),
+    dict(effdock_conditioning='false')])
+def test_invalid_config(options):
+    with pytest.raises(ValueError):
+        ModelConfig(**options)
+
+
+def test_effdock_checkpoint_exact_resume_and_architecture_rejection(tiny_cfg, tmp_path):
+    cfg = replace(tiny_cfg, interaction='effdock', effdock_radial_hidden=24, dropout=.1)
+    training = TrainConfig(steps=3, batch_size=1, crop_lengths=[10, 12], threads=1,
+                           tasks=['aa_infill', 'bb_infill', 'sc_infill'])
+    dataset = SyntheticDataset(3, 14, 17)
+    train(cfg, training, dataset, tmp_path/'full')
+    train(cfg, training, dataset, tmp_path/'resume', stop_after=1)
+    train(cfg, training, dataset, tmp_path/'resume', resume=tmp_path/'resume/last.pt')
+    a, b = [load_checkpoint(tmp_path/x/'last.pt') for x in ('full', 'resume')]
+    for key in a['model']:
+        torch.testing.assert_close(a['model'][key], b['model'][key], atol=0, rtol=0)
+    with pytest.raises(ValueError, match='model configuration'):
+        train(tiny_cfg, training, dataset, tmp_path/'bad', resume=tmp_path/'resume/last.pt')
+
+
+def test_old_v01_config_can_resume(tiny_cfg, tmp_path):
+    training = TrainConfig(steps=2, batch_size=1, crop_lengths=[10], threads=1)
+    dataset = SyntheticDataset(2, 12, 17)
+    train(tiny_cfg, training, dataset, tmp_path/'r', stop_after=1)
+    path = tmp_path/'r/last.pt'
+    payload = load_checkpoint(path)
+    payload['model_config'] = {k: v for k, v in payload['model_config'].items()
+                               if k != 'interaction' and not k.startswith('effdock_')}
+    torch.save(payload, path)
+    assert train(tiny_cfg, training, dataset, tmp_path/'r', resume=path)['steps'] == 2

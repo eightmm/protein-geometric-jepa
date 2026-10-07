@@ -1,0 +1,21 @@
+# CPU analytic reference. Use effdock_cueq_gpu.yaml for actual CuEq CUDA.
+model:
+  backend: reference
+  interaction: effdock
+  effdock_radial_hidden: 96
+  effdock_expansion: 2
+  effdock_residual_scale: 0.1
+  effdock_aggregation: soft
+  effdock_conditioning: true
+  effdock_dual_radial: true
+  effdock_distance_decay: true
+  effdock_norm_rescale: true
+  effdock_smooth_cutoff: true
+training:
+  steps: 10000
+  batch_size: 2
+  crop_lengths:
+  - 128
+  - 256
+  device: cpu
+  allow_observed_order: false

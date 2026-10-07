@@ -26,6 +26,17 @@ class ModelConfig:
     max_neighbors: int = 24
     backend: str = "reference"
     dropout: float = 0.0
+    # Explicit architecture selection: old checkpoints/configs remain baseline.
+    interaction: str = "baseline"
+    effdock_radial_hidden: int = 96
+    effdock_expansion: int = 2
+    effdock_residual_scale: float = 0.1
+    effdock_aggregation: str = "soft"
+    effdock_conditioning: bool = True
+    effdock_dual_radial: bool = True
+    effdock_distance_decay: bool = True
+    effdock_norm_rescale: bool = True
+    effdock_smooth_cutoff: bool = True
 
     def __post_init__(self):
         if self.heads < 1 or self.sequence_width < 1:
@@ -46,6 +57,19 @@ class ModelConfig:
             raise ValueError("dropout must be in [0,1).")
         if self.backend not in {"reference", "cueq-naive", "cueq-cuda"}:
             raise ValueError("Invalid backend.")
+
+        if self.interaction not in {"baseline", "effdock"}:
+            raise ValueError("interaction must be baseline or effdock.")
+        if self.effdock_radial_hidden < 1 or self.effdock_expansion < 1:
+            raise ValueError("EffDock widths and expansion must be positive.")
+        if not 0 < self.effdock_residual_scale <= 1:
+            raise ValueError("effdock_residual_scale must be in (0,1].")
+        if self.effdock_aggregation not in {"soft", "gate", "degree"}:
+            raise ValueError("Invalid effdock_aggregation.")
+        for key in ("effdock_conditioning", "effdock_dual_radial", "effdock_distance_decay",
+                    "effdock_norm_rescale", "effdock_smooth_cutoff"):
+            if not isinstance(getattr(self, key), bool):
+                raise ValueError(f"{key} must be boolean.")
 
     @property
     def dims(self):
