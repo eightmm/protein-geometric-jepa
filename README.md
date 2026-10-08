@@ -19,26 +19,26 @@
 - **경로**: context Z = online head(H)이고 predictor는 Z만 읽습니다. target은 EMA teacher head(teacher H)입니다. head는 prediction loss로 학습됩니다. regularizer를 꺼도 이 성질이 유지되는 것을 테스트로 확인합니다.
 - **Loss**: type마다 거리를 따로 씁니다. sem은 MSE, irreps는 Frobenius, 원과 방향은 1 − cos, frame은 chordal 거리입니다.
 - **Collapse 방지**: sem에는 variance floor를 걸고, 원에는 channel별 floor를 겁니다. arXiv:2609.21656의 heat-kernel MMD(`torus_mmd`, `sphere_mmd`)는 ablation 옵션입니다.
-- **실행 검증**: 단백질 22개로 실제 학습과 같은 방식의 확률적 overfit(random crop, 매번 새 mask, task 혼합, EMA)을 돌렸습니다. loss는 37%까지 떨어졌고, retrieval은 우연 수준의 6.8배이며 계속 상승 중이었습니다. 이때 covariance 항이 rank 붕괴를 막습니다. 실제 CuEq CUDA 경로도 Blackwell GPU에서 통과했습니다. 테스트는 CPU에서 187 passed, CUDA에서 CuEq 10 passed입니다.
+- **실행 검증**: 단백질 22개로 실제 학습과 같은 방식의 확률적 overfit(random crop, 매번 새 mask, task 혼합, EMA)을 돌렸습니다. loss는 37%까지 떨어졌고, retrieval은 우연 수준의 6.8배이며 계속 상승 중이었습니다. 이때 covariance 항이 rank 붕괴를 막습니다. 실제 CuEq CUDA 경로도 Blackwell GPU에서 통과했습니다. 테스트는 CPU에서 189 passed / 2 CUDA skips, GPU에서 CuEq·학습 경로 24 passed입니다(`reports/typed_latent/pytest_*.txt`).
 - **비교 기준**: `latent_typing: euclidean`이 all-Euclidean baseline입니다. 근거와 실험 결과는 [TYPED_LATENT_KO.md](docs/TYPED_LATENT_KO.md)에 있습니다. 이전 형식의 checkpoint는 읽지 않습니다(format 3).
 
 ## JEPA target·predictor 결함 수정
 
 이전 구현을 실행해 확인한 결함을 고쳤습니다.
 
-- Target projector가 학습되지 않아 l>0 target이 고정된 무작위 사영이었습니다. 이제 target은 teacher encoder 상태를 parameter 없이 정규화한 값입니다(soft RMS floor와 log 크기 scalar).
+- Target projector가 학습되지 않아 l>0 target이 고정된 무작위 사영이었습니다. 지금은 EMA teacher의 typed head 출력을 parameter 없이 정규화해 target으로 씁니다(soft RMS floor와 log 크기 scalar). head는 prediction loss로 학습됩니다.
 - Predictor는 cross-attention 1층에서 2단계 equivariant transformer로 바뀌었습니다. Joint stack 뒤에 atom decoder가 있고, relative position bias와 bilinear FFN을 씁니다.
 - Atom query는 관측된 원자 목록이 아니라 visible sequence의 topology로 만듭니다.
 - Mask는 겹치지 않는 multi-block span입니다. Task는 sample마다 섞이고, EMA는 schedule을 따릅니다.
 - Reference message가 CG 경로 전체를 갖습니다.
 
-Encoder 확장 네 가지(`sc_context: spatial`, `effdock_directional`, `effdock_ffn: bilinear`, `effdock_adaptive_cutoff`)는 opt-in 실험입니다. 네 가지를 모두 켠 설정은 `configs/jepa_full_cueq_gpu.yaml`입니다. 이전 형식의 checkpoint는 읽지 않습니다. 계획 단계에서 Codex, Claude, Antigravity council의 검토를 거쳤습니다. 근거와 검증 범위는 [JEPA_TARGETS_KO.md](docs/JEPA_TARGETS_KO.md)에 있습니다. CPU에서 171 passed / 2 CUDA skips이고, 실제 CuEq 0.9.0 CPU 테스트도 실행되었습니다. GPU 학습과 품질 향상은 아직 검증하지 않았습니다.
+Encoder 확장 네 가지(`sc_context: spatial`, `effdock_directional`, `effdock_ffn: bilinear`, `effdock_adaptive_cutoff`)는 opt-in 실험입니다. 네 가지를 모두 켠 설정은 `configs/jepa_full_cueq_gpu.yaml`입니다. 이전 형식의 checkpoint는 읽지 않습니다. 계획 단계에서 Codex, Claude, Antigravity council의 검토를 거쳤습니다. 근거와 검증 범위는 [JEPA_TARGETS_KO.md](docs/JEPA_TARGETS_KO.md)에 있습니다. 현재 테스트 결과는 아래 typed latent 절의 수치를 따릅니다. 품질 향상은 아직 검증하지 않았습니다.
 
 ## EFF-Dock-inspired CuEq interaction
 
 `model.interaction: effdock`로 BB atom, SC atom, BB residue, AA atom, AA residue의 다섯 단계에서 새 블록을 사용할 수 있습니다. Shared tensor product, dual radial scaling, directed edge-type decay, degree-wise RMSNorm, invariant conditioning, gated aggregation 및 residual equivariant FFN을 통합했습니다. 기존 설정의 기본값은 `baseline`이라 과거 모델을 조용히 바꾸지 않습니다.
 
-**실제 CuEq 0.9.0 CPU 연산을 GitHub CI에서 검증했습니다.** 전용 테스트 7개, 18-step 학습, 9개 task 역전파가 통과했습니다. 별도 reference CI는 Python 3.11/3.12/3.13에서 통과했고, 로컬 full suite는 123 passed / 9 optional skips입니다. **CuEq CUDA fused kernel과 GPU 학습은 아직 실행 미검증**입니다. [정확한 검증 범위](docs/INTERACTION_VALIDATION.md)를 확인하세요.
+**실제 CuEq 0.9.0 CPU 연산을 GitHub CI에서 검증했습니다.** 전용 테스트 7개, 18-step 학습, 9개 task 역전파가 통과했습니다. 별도 reference CI는 Python 3.11/3.12/3.13에서 통과했고, 로컬 full suite는 123 passed / 9 optional skips입니다. 그 뒤 CuEq CUDA 경로도 Blackwell GPU에서 테스트와 22개 단백질 overfit으로 실행했습니다(`reports/typed_latent/`). 당시 검증 범위는 [INTERACTION_VALIDATION.md](docs/INTERACTION_VALIDATION.md)에 있습니다.
 
 사전학습된 가중치나 downstream 성능 향상 주장은 제공하지 않습니다. Synthetic demo는 동작 검증이며, EFF-Dock의 docking checkpoint와 호환되는 모델이 아닙니다. [강화 분석](docs/EFFDOCK_UPGRADE_KO.md)에 원본과의 차이, tradeoff, ablation 및 후속 우선순위를 기록했습니다.
 
@@ -58,9 +58,42 @@ protein-jepa demo --config configs/effdock_smoke.yaml --output runs/effdock-smok
 
 ## 아키텍처
 
+모든 구조 상태는 `Fiber = (s, v, T)`입니다. s는 scalar, v는 Cartesian vector(l=1), T는 대칭이고 trace가 0인 3×3 tensor(l=2, 자유도 5)입니다. 구조 경로(encoder, typed head, loss)는 정확히 SO(3) 등변/불변이고 평행이동에도 불변입니다. 그래서 회전·이동 augmentation은 기본으로 끕니다.
+
+### 0. 한눈에 보기
+
+```mermaid
+flowchart TB
+  subgraph DATA["데이터"]
+    direction LR
+    REC["single-chain record<br/>(chain 1개만 허용)"] --> CROP["chain 내부 연속 crop<br/>128 / 256 residue<br/>CA 관측 ≥ 50% window"]
+    CROP --> OBS["sample마다 task 1개<br/>(9개 순환) + span mask"]
+  end
+  subgraph STU["Student (학습됨)"]
+    direction LR
+    OE["Online encoder"] --> OH["Online typed head"]
+    OH -->|"context latent Z"| PR["Predictor"]
+    PR --> PRED["예측 typed latent"]
+  end
+  subgraph TEA["Teacher (EMA 사본, no-grad)"]
+    direction LR
+    TE["EMA teacher encoder"] --> TH["Teacher typed head"]
+    TH --> NORM["target 정규화<br/>(parameter 없음)"]
+    NORM --> TGT["target typed latent<br/>(stop-grad)"]
+  end
+  OBS -->|"visible context"| OE
+  CROP -->|"crop 전체"| TE
+  PRED --> LOSS["type별 거리 + collapse 방지 항"]
+  TGT --> LOSS
+  OE -.->|"EMA"| TE
+  OH -.->|"EMA"| TH
+```
+
+학습되는 것은 online encoder, online typed head와 predictor뿐입니다. Teacher는 online 쪽의 EMA 사본이고 gradient를 받지 않습니다. 학습 중 표현 품질은 loss가 아니라 centred node retrieval(`node_top1`과 `chance` 비교)과 effective rank로 판단합니다. loss는 낮아졌는데 rank가 붕괴하는 경우를 실제로 관측했습니다.
+
 ### 1. View별 encoder 계층
 
-모든 구조 상태는 `Fiber = (s, v, T)`로 표현합니다. s는 scalar, v는 Cartesian vector(l=1), T는 대칭·trace 0인 3×3 tensor(l=2, 자유도 5)입니다. 상자 안의 `[...]`는 해당 encoder가 내보내는 성분입니다.
+상자 안의 `[...]`는 해당 encoder가 내보내는 성분입니다.
 
 ```mermaid
 flowchart LR
@@ -82,7 +115,7 @@ flowchart LR
     IE["Internal Transformer"]
     CE["χ Transformer"]
   end
-  subgraph OUT["출력 (node + global)"]
+  subgraph OUT["출력 H (node + global)"]
     direction TB
     HS["H_seq [s]"]
     HB["H_BB [s, v, T]"]
@@ -104,27 +137,75 @@ flowchart LR
 
 - BB 출력은 SC/AA 정보로 덮어쓰지 않습니다. AA fusion은 BB와 SC 상태를 **읽기만** 합니다(`test_aa_fusion_does_not_mutate_bb`).
 - Internal과 χ encoder는 Cartesian graph를 보지 않습니다.
+- SC atom stem은 기본(`sc_context: local`)으로 같은 residue의 원자만 봅니다.
 - 구조 interaction block은 `interaction: baseline | effdock`, 연산 backend는 `backend: reference | cueq-naive | cueq-cuda`로 고릅니다.
 
-### 2. 학습 한 step (JEPA)
+### 2. Typed latent head
+
+View마다 head가 하나씩 있고, encoder 출력 H를 성질별 공간 위의 latent로 바꿉니다. 같은 구조의 head가 online, teacher, predictor 출력 쪽에 있습니다.
+
+```mermaid
+flowchart LR
+  H["encoder 출력 H<br/>s · v (l=1) · T (l=2)"]
+  H --> INV["불변량 묶음<br/>s, ‖v‖, ‖T‖,<br/>Gram vᵢ·vⱼ"]
+  INV --> SEM["MLP<br/>→ sem ∈ R^D"]
+  INV --> CIR["Linear → (cos, sin) × C<br/>÷ norm → S¹ × C"]
+  H --> L1["channel mix(v)<br/>→ l=1 irreps"]
+  H --> L2["channel mix(T)<br/>→ l=2 irreps"]
+  H --> DIR["channel mix(v) ÷ norm<br/>→ S² (opt-in)"]
+  H --> FR["channel mix(v) → (a, b)<br/>Gram–Schmidt → SO(3) (opt-in)"]
+  subgraph LOSS["type별 거리 D_type"]
+    D1["MSE"]
+    D2["1 − cos"]
+    D3["‖Δ‖² / 3C"]
+    D4["‖Δ‖² / 5C"]
+    D5["1 − cos"]
+    D6["(3 − tr RᵀR̂) / 4"]
+  end
+  SEM --> D1
+  CIR --> D2
+  L1 --> D3
+  L2 --> D4
+  DIR --> D5
+  FR --> D6
+```
+
+| View | sem | l=1 / l=2 | S¹ | S² | SO(3) |
+|---|---|---|---|---|---|
+| seq | ✓ | | | | |
+| bb_internal, chi | ✓ | | ✓ | | |
+| sc | ✓ | ✓ | ✓ | opt-in | |
+| bb, aa | ✓ | ✓ | ✓ | opt-in | opt-in |
+
+- **Target 정규화**(teacher 쪽, parameter 없음):
+  - sem은 crop 안의 valid token으로 instance norm을 하고, global token 하나는 layer norm을 씁니다.
+  - l>0 성분은 token별 soft RMS로 나누고, 빠진 크기 정보는 log 크기 scalar 2개로 sem에 붙입니다.
+  - S¹, S², SO(3)는 head에서 이미 manifold 위에 있습니다.
+  - S²와 SO(3) target은 원래 vector가 충분히 클 때만 씁니다. 0에 가까운 vector를 단위화하면 방향이 무의미해지기 때문입니다.
+- **좌표계 없는 context**: 서열만 보는 task처럼 context에 좌표계가 없으면 world frame에 묶인 성분(l=1/l=2, S², SO(3))은 loss에서 뺍니다.
+- **Euclidean baseline**: `latent_typing: euclidean`은 같은 head에서 manifold 사영만 뺀 비교군입니다.
+
+### 3. 학습 한 step
 
 ```mermaid
 flowchart TB
-  R["parent crop 128/256<br/>+ 회전·이동 augmentation"] --> M["task별 observation<br/>(겹치지 않는 multi-block mask)"]
-  M -->|"visible 관측만"| ON["Online encoder<br/>(context view들)"]
-  R -->|"전체 관측"| TE["EMA teacher encoder<br/>(target view, no-grad)"]
-  ON --> HD["online typed head<br/>sem · l1/l2 · S¹ · (S² · SO(3))"]
+  R["chain 내부 crop 128 / 256"] --> M["task별 observation<br/>겹치지 않는 span block (최소 8 residue) 합집합, 35%"]
+  M -->|"visible 관측만"| ON["Online encoder (context view들)"]
+  R -->|"전체 관측"| TE["EMA teacher encoder (target view, no-grad)"]
+  ON --> HD["online typed head"]
   HD --> CT["context typed latent Z<br/>node + global"]
-  MT["mask token<br/>target view · level · 위치<br/>(+ 서열 topology의 atom slot)"] --> P1
+  MT["mask token<br/>target view · level · 위치<br/>(+ 서열 topology로 만든 atom slot)"] --> P1
   CT --> P1["Predictor 1단계: joint stack<br/>equivariant self-attention + bilinear FFN<br/>× predictor_layers"]
-  P1 --> NODE["node / global 예측"]
+  P1 --> NODE["node / global 예측<br/>(predictor typed head)"]
   P1 --> P2["Predictor 2단계: atom decoder<br/>atom token만 갱신 × atom_decoder_layers"]
   P2 --> ATOM["atom 예측"]
   TE --> TH["EMA teacher typed head"]
-  TH --> NT["target 정규화 (parameter 없음)<br/>sem: crop 내 instance norm + log 크기<br/>l1/l2: soft RMS · S¹/S²/SO(3): manifold 위"]
-  NODE --> L["L = Σ_type D_type(node) + λ_G·L_global + λ_A·L_atom<br/>+ sem variance floor + circle floor"]
+  TH --> NT["target 정규화"]
+  NODE --> L["L = Σ_type D_type(node) + λ_G·L_global + λ_A·L_atom"]
   ATOM --> L
   NT --> L
+  CT --> REG["collapse 방지 (context Z)<br/>sem variance floor + covariance<br/>S¹ channel별 floor"]
+  REG --> L
   L -->|"backprop"| ON
   L -->|"backprop"| P1
   ON -.->|"EMA: ema → ema_end"| TE
@@ -135,8 +216,8 @@ flowchart TB
   - mask token에는 숨긴 좌표, frame, edge가 없습니다.
   - atom query는 관측 여부가 아니라 visible 서열의 topology로 만듭니다.
   - 1단계 token은 atom token을 보지 않습니다.
-- **l>0 loss**: context에 좌표계가 있을 때만 vector·tensor 성분을 맞춥니다. 예를 들어 서열만 있는 context에는 world-frame vector를 요구하지 않습니다.
-- **Target**: teacher encoder 출력을 정규화한 값입니다. projector가 없으므로, teacher가 target을 만들 때 쓰는 모든 가중치가 online 경로에서 학습됩니다(`test_every_teacher_target_parameter_is_trained_online`).
+- **Target 경로**: teacher가 target을 만들 때 쓰는 가중치(encoder와 typed head)는 모두 online 경로에서 prediction loss로 학습됩니다. regularizer를 모두 꺼도 이 성질이 유지되는 것을 테스트합니다(`test_every_teacher_target_parameter_is_trained_online`).
+- **Heat-kernel MMD**: arXiv:2609.21656의 `sphere_mmd`(sem)와 `torus_mmd`(S¹)는 기본 regularizer 대신 쓸 수 있는 ablation 옵션입니다.
 
 | Task | Context | Target | l>0 loss |
 |---|---|---|---|
@@ -148,7 +229,7 @@ flowchart TB
 | `sc_infill` | 서열 + bb + 일부 aa | aa (+ SC atom) | 켬 |
 | `aa_infill` | 서열 + 일부 aa | aa (+ atom) | 켬 |
 
-### 3. Block 내부
+### 4. Block 내부
 
 ```mermaid
 flowchart TB
@@ -170,9 +251,7 @@ flowchart TB
 
 opt-in encoder 실험은 `sc_context: spatial`, `effdock_directional`, `effdock_ffn: bilinear`, `effdock_adaptive_cutoff` 네 가지입니다. 근거는 [JEPA_TARGETS_KO.md](docs/JEPA_TARGETS_KO.md)에 있습니다.
 
-BB output은 SC/AA 정보로 덮어쓰지 않습니다. 좌표, polymer connectivity, backbone direction, frame, φ/ψ/ω, Cα pseudo-angle/dihedral, sidechain geometry와 χ를 사용합니다. SASA, DSSP, secondary-structure rule label이나 residue physicochemical lookup은 사용하지 않습니다.
-
-구조 hidden state는 scalar, Cartesian vector, STF rank-2 tensor입니다. **l=2는 수학적으로 5차원**이며 3×3 reference 저장 형식과 CuEq의 5-component basis는 명시적으로 변환합니다. Sequence-only context에는 arbitrary world-frame l>0 target을 강제하지 않습니다. 기본 global target은 **선택한 parent crop 전체**이지 원래 단백질 전체가 아닙니다.
+BB output은 좌표, polymer connectivity, backbone direction, frame, φ/ψ/ω, Cα pseudo-angle/dihedral, sidechain geometry와 χ만 사용합니다. SASA, DSSP, secondary-structure rule label이나 residue physicochemical lookup은 사용하지 않습니다. **l=2는 수학적으로 5차원**이며, 3×3 reference 저장 형식과 CuEq의 5-component basis는 명시적으로 변환합니다. 기본 global target은 원래 단백질 전체가 아니라 **선택한 crop 전체**입니다.
 
 ## 실제 CuEq 사용
 
