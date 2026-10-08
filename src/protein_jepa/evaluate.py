@@ -18,9 +18,10 @@ def summarize_pairs(pairs, results):
         grouped[observation.task_name].append({'pretext_loss': float(loss), **info})
     summary = {}
     for task, infos in grouped.items():
-        # A record counts when any objective term has supervision: latent
-        # targets or (raw-reconstruction baseline) its own raw targets.
-        valid = [r for r in infos if r['valid_targets'] or r.get('raw_angle_targets')
+        # A record counts when any objective term has supervision: node,
+        # global or atom latent targets, or (raw baseline) its own raw targets.
+        valid = [r for r in infos if r['valid_targets'] or r.get('valid_global_target')
+                 or r.get('valid_atom_targets') or r.get('raw_angle_targets')
                  or r.get('raw_coordinate_targets')]
         retrieved = [r for r in valid if 'node_top1' in r]
         def mean(key, rows=valid):

@@ -259,8 +259,9 @@ class ProteinJEPA(nn.Module):
             observed |= latent.global_valid
             observed[owner[latent.index]] = True
         # Global latents stay invariant semantic + irreps; never circles/frames.
+        global_supervised = target.global_valid & observed
         global_loss, _ = typed_distance(prediction.global_state, global_target,
-                                        target.global_valid & observed, spec.equivariant, typed,
+                                        global_supervised, spec.equivariant, typed,
                                         kinds=('sem', 'eq'), segment=every, size=size,
                                         semantic=semantic)
         atom_loss = node_loss*0
@@ -305,7 +306,7 @@ class ProteinJEPA(nn.Module):
         table = torch.stack([terms[k].detach() for k in names]+[counts[k] for k in names]+[
             node_loss.detach(), global_loss.detach(), atom_loss.detach(), top1, retrieved.float(),
             low, atom_count, raw_angle.detach(), raw_coordinate.detach(), raw_angle_count,
-            raw_coordinate_count]).T.tolist()
+            raw_coordinate_count, global_supervised.to(low.dtype)]).T.tolist()
         results = []
         k = len(names)
         for b, row in enumerate(table):
@@ -313,9 +314,11 @@ class ProteinJEPA(nn.Module):
                     "valid_targets_by_kind": {name: int(row[k+i]) for i, name in enumerate(names)}}
             if info["valid_targets"]:
                 info.update({name: row[i] for i, name in enumerate(names) if row[k+i] > 0})
-            node, glob, atom, hit, n, low_b, atoms_b, angle_b, coordinate_b, angles_n, coords_n = row[2*k:]
+            (node, glob, atom, hit, n, low_b, atoms_b, angle_b, coordinate_b, angles_n, coords_n,
+             global_b) = row[2*k:]
             info.update(target_low_rms=low_b, task=observations[b].task_name, node_loss=node,
-                        global_loss=glob, atom_loss=atom, valid_atom_targets=int(atoms_b))
+                        global_loss=glob, atom_loss=atom, valid_atom_targets=int(atoms_b),
+                        valid_global_target=bool(global_b))
             if raw:
                 # Raw targets have their own validity, independent of the latent targets.
                 info.update(raw_angle_loss=angle_b, raw_coordinate_loss=coordinate_b,

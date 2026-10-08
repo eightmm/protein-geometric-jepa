@@ -582,3 +582,22 @@ def test_evaluation_counts_raw_only_supervision(model,protein):
     summary=summarize_pairs(pairs,results)['chi_to_sc']
     assert summary['records']==1 and summary['raw_angle_records']==1
     assert summary['mean_raw_angle_loss'] is not None and summary['mean_pretext_loss'] is not None
+
+
+def test_evaluation_counts_global_and_atom_only_supervision(model,protein):
+    """Records supervised only by the global or atom term are summarized too."""
+    from protein_jepa.evaluate import summarize_pairs
+    from protein_jepa.objectives.tasks import Observation
+    n=len(protein)
+    obs=make_observation(protein,'bb_infill',.3,torch.Generator().manual_seed(2),min_span=2)
+    hidden_targets=protein.present.clone(); hidden_targets[obs.target_residues,:4]=False
+    global_only=(replace(protein,present=hidden_targets),obs)      # masked residues unobserved
+    aa=make_observation(protein,'aa_infill',.3,torch.Generator().manual_seed(3),min_span=2)
+    pairs=[global_only,(protein,aa)]
+    with torch.no_grad():
+        results=model.sample_losses(pairs,TrainConfig())
+    g,a=results[0][1],results[1][1]
+    assert g['valid_targets']==0 and g['valid_global_target']
+    summary=summarize_pairs(pairs,results)
+    assert summary['bb_infill']['records']==1 and summary['bb_infill']['mean_global_loss'] is not None
+    assert a['valid_atom_targets']>0 and summary['aa_infill']['records']==1
