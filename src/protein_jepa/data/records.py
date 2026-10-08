@@ -27,6 +27,10 @@ class ProteinRecord:
             raise ValueError("Invalid sequence positions or peptide connectivity.")
         if len(self.residue_ids) != n or len(set(self.residue_ids)) != n:
             raise ValueError("Residue keys must be unique and aligned.")
+        chains = sorted({rid.split(":", 1)[0] for rid in self.residue_ids})
+        if len(chains) != 1:
+            # Training units are single chains; crops must never span chains.
+            raise ValueError(f"A record holds exactly one chain; found {chains}.")
         if n == 0:
             raise ValueError("Empty records are not trainable.")
         if self.xyz.dtype != torch.float32:
@@ -92,10 +96,25 @@ class ProteinRecord:
                           ("xyz", "present", "seq", "seq_pos", "peptide")}, **meta)
 
 
-def random_crop(record: ProteinRecord, lengths: list[int], generator: torch.Generator):
+def random_crop(record: ProteinRecord, lengths: list[int], generator: torch.Generator,
+                min_observed: float = 0.0):
+    """Contiguous crop inside the record's single chain.
+
+    Rows can include explicit missing-residue positions from sequence_map, so
+    a window may be mostly unobserved (disordered loops/termini). The start is
+    drawn uniformly among windows whose CA-observed fraction is at least
+    min_observed; if none qualifies, the best-covered window is used. Chains
+    shorter than the crop length are used whole.
+    """
     k = lengths[int(torch.randint(len(lengths), (), generator=generator))]
-    # Rows can include explicit missing-residue positions from sequence_map.
-    # Without canonical mapping no assertion of fixed sequence span is made.
     k = min(k, len(record))
-    start = int(torch.randint(len(record)-k+1, (), generator=generator))
-    return record.crop(start, k)
+    span = len(record)-k+1
+    if min_observed <= 0 or span == 1:
+        return record.crop(int(torch.randint(span, (), generator=generator)), k)
+    observed = torch.cat((record.present.new_zeros(1, dtype=torch.long),
+                          record.present[:, 1].long().cpu().cumsum(0)))
+    fraction = (observed[k:]-observed[:-k]).float()/k            # per start, [span]
+    candidates = torch.where(fraction >= min_observed)[0]
+    if len(candidates) == 0:
+        return record.crop(int(fraction.argmax()), k)
+    return record.crop(int(candidates[int(torch.randint(len(candidates), (), generator=generator))]), k)

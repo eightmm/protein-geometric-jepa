@@ -237,7 +237,7 @@ Global slot에 dummy atom coordinate를 부여하지 않는다. 하나의 global
 
 ## 14. Crop 계약
 
-Parent crop P는 128 또는 256의 contiguous sequence positions다. 현재 CPU smoke config만 더 작은 길이를 사용한다.
+학습 단위는 **single chain**이다. Record 하나는 chain 하나이고, 생성 시점에 이를 검증한다(residue ID의 chain이 둘 이상이면 오류). Parent crop P는 그 chain 안의 128 또는 256개 contiguous row다. 따라서 crop이 chain을 넘어가지 않는다. Chain이 crop 길이보다 짧으면 chain 전체를 쓴다. Sequence map으로 결측 residue를 행으로 열거하면, crop이 대부분 관측되지 않은 구간에 떨어질 수 있다. 그래서 CA가 관측된 행의 비율이 `crop_min_observed`(기본 0.5) 이상인 시작 위치들 중에서 균등하게 고른다. 그런 위치가 없으면 관측 비율이 가장 높은 위치를 쓴다. 현재 CPU smoke config만 더 작은 crop 길이를 사용한다.
 
 Teacher의 `full`은 기본적으로 **P 전체**다. Student는 P 안의 일부 관측을 가린다.
 

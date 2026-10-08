@@ -26,7 +26,7 @@ def evaluate(checkpoint_path, manifest, output, split='val', max_records=32, dev
     gen=torch.Generator().manual_seed(training.seed+90001)
     metrics=defaultdict(list)
     for i in range(min(max_records,len(data))):
-        record=random_crop(data[i],training.crop_lengths,gen).to(device)
+        record=random_crop(data[i],training.crop_lengths,gen,training.crop_min_observed).to(device)
         for task in training.tasks:
             observation=make_observation(record,task,training.mask_fraction,gen,
                                          training.mask_blocks,training.mask_mode,

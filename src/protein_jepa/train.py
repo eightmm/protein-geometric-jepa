@@ -113,7 +113,8 @@ def train(model_cfg, train_cfg, dataset, output, resume=None, stop_after=None):
             task = train_cfg.tasks[(step*train_cfg.batch_size+b) % len(train_cfg.tasks)]
             tasks.append(task)
             idx = int(torch.randint(len(dataset), (), generator=sampler))
-            record = random_crop(dataset[idx], train_cfg.crop_lengths, sampler).to(device)
+            record = random_crop(dataset[idx], train_cfg.crop_lengths, sampler,
+                                 train_cfg.crop_min_observed).to(device)
             # Apply the SAME rigid transform to the source record from which
             # teacher and student observations are constructed. No frame mismatch.
             if train_cfg.rigid_augmentation:

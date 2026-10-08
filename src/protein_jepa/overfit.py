@@ -26,7 +26,8 @@ def fixed_observations(records, train_cfg: TrainConfig, seed: int, crop: bool = 
     for i, record in enumerate(records):
         if crop:
             record = random_crop(record, train_cfg.crop_lengths,
-                                 torch.Generator().manual_seed(seed+77*i))
+                                 torch.Generator().manual_seed(seed+77*i),
+                                 train_cfg.crop_min_observed)
         for j, task in enumerate(train_cfg.tasks):
             generator = torch.Generator().manual_seed(seed+1000*i+j)
             pairs.append((record, make_observation(record, task, train_cfg.mask_fraction, generator,
@@ -72,7 +73,7 @@ def sample_batch(records, train_cfg: TrainConfig, step: int, batch_size: int,
     for b in range(batch_size):
         task = train_cfg.tasks[(step*batch_size+b) % len(train_cfg.tasks)]
         record = records[int(torch.randint(len(records), (), generator=generator))]
-        record = random_crop(record, train_cfg.crop_lengths, generator)
+        record = random_crop(record, train_cfg.crop_lengths, generator, train_cfg.crop_min_observed)
         if train_cfg.rigid_augmentation:
             rotation = random_rotation(generator).to(record.xyz.device)
             shift = (torch.randn(3, generator=generator)*train_cfg.translation_std).to(record.xyz.device)

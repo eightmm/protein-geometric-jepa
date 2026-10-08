@@ -124,3 +124,26 @@ def test_canonical_positions_cannot_skip_missing_rows(protein):
     pos=protein.seq_pos.clone();pos[4:]+=2
     with pytest.raises(ValueError,match='enumerate missing'):
         replace(protein,seq_pos=pos)
+
+
+def test_record_rejects_multiple_chains(protein):
+    ids=tuple(f"{'A' if i<5 else 'B'}:{i+1}:" for i in range(len(protein)))
+    with pytest.raises(ValueError,match='exactly one chain'):
+        replace(protein,residue_ids=ids)
+
+
+def test_crop_stays_in_observed_part_of_the_chain():
+    """Mostly-unobserved windows (missing loops/termini) are redrawn."""
+    import torch
+    from protein_jepa.data.records import random_crop
+    from protein_jepa.data.synthetic import synthetic_record
+    rec=synthetic_record(40,3)
+    present=rec.present.clone(); present[:28]=False      # only the last 12 rows observed
+    rec=replace(rec,present=present,peptide=rec.peptide&present[1:,0]&present[:-1,2])
+    def fractions(minimum):
+        g=torch.Generator().manual_seed(0)
+        return [float(random_crop(rec,[8],g,minimum).present[:,1].float().mean()) for _ in range(200)]
+    assert min(fractions(.5))>=.5                        # every crop has >= half observed
+    assert min(fractions(0.))<.5                         # the old uniform draw did not
+    whole=random_crop(rec,[64],torch.Generator().manual_seed(0),.5)
+    assert len(whole)==len(rec)                          # short chains are used whole

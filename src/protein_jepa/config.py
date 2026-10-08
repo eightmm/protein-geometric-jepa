@@ -129,6 +129,8 @@ class TrainConfig:
     ema_end: float = 1.0
     grad_clip: float = 1.0
     crop_lengths: list[int] = field(default_factory=lambda: [128, 256])
+    # Crops stay inside one chain; redraw windows with < this CA-observed fraction.
+    crop_min_observed: float = 0.5
     mask_fraction: float = 0.35
     # Union of mask_blocks contiguous spans. 'spatial' (opt-in) picks a 3D
     # neighbourhood; its query positions then reveal hidden contacts.
@@ -180,6 +182,8 @@ class TrainConfig:
             raise ValueError("Invalid train size.")
         if self.save_every < 1 or self.log_every < 1 or self.learning_rate <= 0:
             raise ValueError("Invalid schedule.")
+        if not 0 <= self.crop_min_observed <= 1:
+            raise ValueError("crop_min_observed must be in [0, 1].")
         if self.translation_std < 0:
             raise ValueError("translation_std must be nonnegative.")
         if self.threads < 1 or self.grad_clip <= 0 or self.weight_decay < 0:

@@ -22,7 +22,7 @@ Unknown configuration keys는 조용히 무시하지 않고 오류를 낸다. Cr
 
 ## 2. 한 step의 처리
 
-Protein을 uniform하게 sample하고 parent crop을 선택한다. Sample마다 task를 round-robin으로 배정하고(한 step 안에 task가 섞인다), multi-block context observation mask를 만든다. Mask 이후 기하량과 graph를 구성한다. Teacher는 동일 parent crop의 target view 전체를 읽는다. Predictor는 visible representation으로 node/atom/global latent를 예측한다. Valid targets로 loss를 task 안에서 평균한 뒤 task 사이에서 평균하고, 정규화 전 온라인 context scalar에 variance floor를 건다. Optimizer와 scheduler 업데이트 후 `ema`→`ema_end` schedule의 momentum으로 teacher를 갱신한다.
+Single-chain record를 uniform하게 sample하고, 그 chain 안에서 parent crop을 선택한다. crop 위치는 CA 관측 비율이 `crop_min_observed` 이상인 위치 중에서 고른다. Sample마다 task를 round-robin으로 배정하고(한 step 안에 task가 섞인다), multi-block context observation mask를 만든다. Mask 이후 기하량과 graph를 구성한다. Teacher는 동일 parent crop의 target view 전체를 읽는다. Predictor는 visible representation으로 node/atom/global latent를 예측한다. Valid targets로 loss를 task 안에서 평균한 뒤 task 사이에서 평균하고, 정규화 전 온라인 context scalar에 variance floor를 건다. Optimizer와 scheduler 업데이트 후 `ema`→`ema_end` schedule의 momentum으로 teacher를 갱신한다.
 
 Task schedule은 기본적으로 순환형이다. 모든 view가 context에도 등장하여 학습 gradient를 받도록 만든다. `tasks`를 줄이면 특정 tower가 학습되지 않을 수 있으므로 configuration과 ablation을 함께 기록한다.
 

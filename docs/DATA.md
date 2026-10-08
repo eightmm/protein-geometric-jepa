@@ -2,7 +2,7 @@
 
 ## 지원 단위
 
-v0.1 record는 **하나의 protein chain**이다. PDB/mmCIF의 첫 model을 읽고 표준 residue와 MSE→MET 정규화를 지원한다. 여러 model/conformer, multichain complex, ligand/ion, noncanonical chemistry를 자동으로 하나의 record에 섞지 않는다.
+Record는 **하나의 protein chain**이다. v0.4부터는 생성 시점에 강제한다. 모든 residue ID(`chain:number:icode`)의 chain이 같아야 하고, 다르면 거부한다. 학습 crop은 이 chain 안에서만 잘린다. 여러 chain이 있는 구조는 chain마다 따로 `prepare --chain X`로 record를 만든다. PDB/mmCIF의 첫 model을 읽고 표준 residue와 MSE→MET 정규화를 지원한다. 여러 model/conformer, multichain complex, ligand/ion, noncanonical chemistry를 자동으로 하나의 record에 섞지 않는다.
 
 입력 구조는 이미 선택한 biological state여야 한다. 이 프로젝트는 protonation, missing sidechain reconstruction, force-field relaxation, structure prediction을 실행하지 않는다. Hydrogen은 feature slot에 포함하지 않는다.
 
