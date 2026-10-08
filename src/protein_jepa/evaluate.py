@@ -18,10 +18,15 @@ def summarize_pairs(pairs, results):
         grouped[observation.task_name].append({'pretext_loss': float(loss), **info})
     summary = {}
     for task, infos in grouped.items():
-        valid = [r for r in infos if r['valid_targets']]
+        # A record counts when any objective term has supervision: latent
+        # targets or (raw-reconstruction baseline) its own raw targets.
+        valid = [r for r in infos if r['valid_targets'] or r.get('raw_angle_targets')
+                 or r.get('raw_coordinate_targets')]
         retrieved = [r for r in valid if 'node_top1' in r]
         def mean(key, rows=valid):
             return sum(r[key] for r in rows)/len(rows) if rows else None
+        raw_angle = [r for r in infos if r.get('raw_angle_targets')]
+        raw_coordinate = [r for r in infos if r.get('raw_coordinate_targets')]
         counts = defaultdict(int)
         for row in infos:
             for kind, count in row['valid_targets_by_kind'].items():
@@ -34,7 +39,10 @@ def summarize_pairs(pairs, results):
                          'valid_targets_by_kind': dict(counts),
                          'valid_atom_targets': sum(r['valid_atom_targets'] for r in infos),
                          'mean_node_loss': mean('node_loss'),
-                         'mean_global_loss': mean('global_loss'), 'mean_atom_loss': mean('atom_loss')}
+                         'mean_global_loss': mean('global_loss'), 'mean_atom_loss': mean('atom_loss'),
+                         'mean_raw_angle_loss': mean('raw_angle_loss', raw_angle),
+                         'mean_raw_coordinate_loss': mean('raw_coordinate_loss', raw_coordinate),
+                         'raw_angle_records': len(raw_angle), 'raw_coordinate_records': len(raw_coordinate)}
     return summary
 
 

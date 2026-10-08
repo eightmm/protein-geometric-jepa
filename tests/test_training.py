@@ -541,3 +541,29 @@ def test_group_stop_signal_with_loader_workers(tmp_path):
     run(tmp_path/'full','none')
     a,b=load_checkpoint(tmp_path/'full'/'last.pt'),load_checkpoint(tmp_path/'r'/'last.pt')
     assert all(torch.equal(a['model'][k],b['model'][k]) for k in a['model'])
+
+
+def test_mean_readout_loads_states_with_an_unused_score_network(tiny_cfg):
+    from protein_jepa.models.fibers import GlobalReadout
+    learned=GlobalReadout(tiny_cfg.dims)
+    mean=GlobalReadout(tiny_cfg.dims,learned=False)
+    mean.load_state_dict(learned.state_dict())        # strict: score.* keys are dropped
+    torch.testing.assert_close(mean.scalar_query,learned.scalar_query)
+
+
+def test_evaluation_counts_raw_only_supervision(model,protein):
+    """A record whose latent targets are all missing but whose raw targets
+    exist still contributes to the raw-baseline summary."""
+    from protein_jepa.evaluate import summarize_pairs
+    present=protein.present.clone(); present[:,4:]=False          # no sidechains
+    bare=replace(protein,present=present)
+    obs=make_observation(bare,'chi_to_sc',.3,torch.Generator().manual_seed(2))
+    cfg=TrainConfig(node_weight=0.,global_weight=0.,atom_weight=0.,raw_angle_weight=1.)
+    pairs=[(bare,obs)]
+    with torch.no_grad():
+        results=model.sample_losses(pairs,cfg)
+    info=results[0][1]
+    assert info['valid_targets']==0 and info['raw_angle_targets']>0
+    summary=summarize_pairs(pairs,results)['chi_to_sc']
+    assert summary['records']==1 and summary['raw_angle_records']==1
+    assert summary['mean_raw_angle_loss'] is not None and summary['mean_pretext_loss'] is not None

@@ -130,6 +130,14 @@ class GlobalReadout(nn.Module):
         self.mix = FiberLinear(dims, dims)
         self.dims = dims
 
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        # Mean pooling has no score network; checkpoints that stored an unused
+        # one (an earlier mean-readout layout) still load.
+        if self.score is None:
+            for key in [k for k in state_dict if k.startswith(prefix+"score.")]:
+                del state_dict[key]
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
     def forward(self, h: Fiber, valid: Tensor, batch: Tensor | None = None, size: int = 1) -> Fiber:
         """One readout per record (`batch` = record of each node); a record
         without valid nodes reads out the bare query."""

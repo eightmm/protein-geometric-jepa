@@ -275,9 +275,10 @@ class ProteinJEPA(nn.Module):
                                             target.atom_slot, atom_residues, atom_slots, batch.seq,
                                             owner[atom_residues], size)
         raw_angle = raw_coordinate = node_loss.detach()*0
+        raw_angle_count = raw_coordinate_count = torch.zeros_like(node_loss)
         if raw:
-            raw_angle, raw_coordinate = self._raw_losses(batch, prediction, query, atom_visible,
-                                                         spec.equivariant, train_cfg)
+            raw_angle, raw_coordinate, raw_angle_count, raw_coordinate_count = self._raw_losses(
+                batch, prediction, query, atom_visible, spec.equivariant, train_cfg)
         loss = (train_cfg.node_weight*node_loss + train_cfg.global_weight*global_loss
                 + train_cfg.atom_weight*atom_loss + train_cfg.raw_angle_weight*raw_angle
                 + train_cfg.raw_coordinate_weight*raw_coordinate)
@@ -303,7 +304,8 @@ class ProteinJEPA(nn.Module):
         names = list(terms)
         table = torch.stack([terms[k].detach() for k in names]+[counts[k] for k in names]+[
             node_loss.detach(), global_loss.detach(), atom_loss.detach(), top1, retrieved.float(),
-            low, atom_count, raw_angle.detach(), raw_coordinate.detach()]).T.tolist()
+            low, atom_count, raw_angle.detach(), raw_coordinate.detach(), raw_angle_count,
+            raw_coordinate_count]).T.tolist()
         results = []
         k = len(names)
         for b, row in enumerate(table):
@@ -311,11 +313,13 @@ class ProteinJEPA(nn.Module):
                     "valid_targets_by_kind": {name: int(row[k+i]) for i, name in enumerate(names)}}
             if info["valid_targets"]:
                 info.update({name: row[i] for i, name in enumerate(names) if row[k+i] > 0})
-            node, glob, atom, hit, n, low_b, atoms_b, angle_b, coordinate_b = row[2*k:]
+            node, glob, atom, hit, n, low_b, atoms_b, angle_b, coordinate_b, angles_n, coords_n = row[2*k:]
             info.update(target_low_rms=low_b, task=observations[b].task_name, node_loss=node,
                         global_loss=glob, atom_loss=atom, valid_atom_targets=int(atoms_b))
             if raw:
-                info.update(raw_angle_loss=angle_b, raw_coordinate_loss=coordinate_b)
+                # Raw targets have their own validity, independent of the latent targets.
+                info.update(raw_angle_loss=angle_b, raw_coordinate_loss=coordinate_b,
+                            raw_angle_targets=int(angles_n), raw_coordinate_targets=int(coords_n))
             if n >= 2:
                 info.update(node_top1=hit, node_chance=1/n)
             results.append((loss[b], info, regularizer_inputs[b]))
@@ -328,13 +332,15 @@ class ProteinJEPA(nn.Module):
         owner, size = batch.batch, batch.size
         zero = (prediction.raw_angles.sum()+prediction.raw_coordinate.sum())*0
         angle = coordinate = zero.expand(size)
+        angle_count = coordinate_count = angle.detach()*0
         if train_cfg.raw_angle_weight > 0:
             with torch.no_grad():
                 bb, chi = backbone_features(batch), chi_features(batch)
                 angles = torch.cat((bb.periodic, chi.encoded), 1)[query]
                 valid = torch.cat((bb.periodic_valid, chi.valid), 1)[query]
             per = 1-(prediction.raw_angles*angles).sum(-1)
-            angle = angle+_masked_term(per, valid, owner[query], size)[0]
+            term, angle_count = _masked_term(per, valid, owner[query], size)
+            angle = angle+term
         if train_cfg.raw_coordinate_weight > 0 and equivariant:
             # Unobserved coordinates may hold any value (even NaN): mask first.
             present = batch.present[:, 1]
@@ -344,8 +350,9 @@ class ProteinJEPA(nn.Module):
             chosen = query[ok]
             target = (ca[chosen]-centroid[owner[chosen]])/10
             error = (prediction.raw_coordinate[ok]-target).square().sum(-1)/3
-            coordinate = coordinate+segment_mean(error, owner[chosen], size)[0]
-        return angle, coordinate
+            term, coordinate_count = segment_mean(error, owner[chosen], size)
+            coordinate = coordinate+term
+        return angle, coordinate, angle_count, coordinate_count
 
     def forward(self, records_and_observations, train_cfg: TrainConfig):
         by_task, logs, groups = {}, [], {}
