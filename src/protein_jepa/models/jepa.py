@@ -51,7 +51,7 @@ class TargetStack(nn.Module):
 
     Context latents come from the online heads and feed the predictor, so
     every head weight that shapes a teacher target is trained by the
-    prediction loss (design B; the v0.2 projector only saw a regularizer).
+    prediction loss (design B; an earlier projector only saw a regularizer).
     """
     def __init__(self, cfg):
         super().__init__()
@@ -87,8 +87,8 @@ class ProteinJEPA(nn.Module):
     @torch.no_grad()
     def update_teacher(self, momentum: float):
         online_params = dict(self.online.named_parameters())
-        for name, parameter in self.teacher.named_parameters():
-            parameter.lerp_(online_params[name], 1-momentum)
+        teacher = list(self.teacher.named_parameters())
+        torch._foreach_lerp_([p for _, p in teacher], [online_params[n] for n, _ in teacher], 1-momentum)
         online_buffers = dict(self.online.named_buffers())
         for name, buffer in self.teacher.named_buffers():
             buffer.copy_(online_buffers[name])
@@ -226,7 +226,7 @@ class ProteinJEPA(nn.Module):
         by_task, logs, groups = {}, [], {}
         if not records_and_observations:
             raise ValueError("Empty microbatch.")
-        results = self.sample_losses(records_and_observations, train_cfg)
+        results = self.sample_losses(records_and_observations, train_cfg, train_cfg.pack_size or None)
         for (_, observation), (loss, info, inputs) in zip(records_and_observations, results):
             by_task.setdefault(observation.task_name, []).append(loss)
             logs.append(info)

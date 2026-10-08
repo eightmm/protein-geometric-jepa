@@ -46,25 +46,39 @@ protein-jepa demo --config configs/smoke.yaml --output runs/partial \
 
 Checkpoint는 `weights_only=True`로 읽을 수 있는 tensor/basic-type dictionary다. Custom Python object를 pickle해서 학습 record를 저장하지 않는다. `last.pt`는 임시 파일에 fsync 후 replace한다.
 
-## 5. DDP
+## 5. 실행 환경: 단일 GPU, 다중 GPU, 다중 node
 
 ```bash
+# 단일 GPU
+protein-jepa train --config configs/effdock_cueq_gpu.yaml --manifest data/manifest.jsonl --output runs/one
+# 한 node 4 GPU
 torchrun --standalone --nproc_per_node=4 -m protein_jepa.cli train \
-  --config configs/cueq_gpu.yaml --manifest data/manifest.jsonl --output runs/ddp
+  --config configs/effdock_cueq_gpu.yaml --manifest data/manifest.jsonl --output runs/ddp
+# Slurm (N node × NPROC GPU): node마다 torchrun 하나, 첫 node에서 rendezvous.
+# 사이트의 account/partition 옵션은 sbatch에 직접 덧붙인다.
+MANIFEST=/abs/manifest.jsonl OUTDIR=/abs/runs/jepa CONFIG=configs/effdock_cueq_gpu.yaml \
+  sbatch --nodes=2 scripts/train_slurm.sh
 ```
 
-현재 batch_size는 **rank당 protein 수**다. microbatch 안에서 같은 task의 sample들은 하나의 disjoint-union batch로 묶여 한 번에 계산된다. graph edge는 record 안에만 생기고, Transformer와 predictor attention은 record별 padding으로 서로를 보지 않으며, loss와 진단값은 record별로 계산한다. 따라서 결과는 sample을 하나씩 계산한 것과 같고(`test_packed_group_equals_separate_samples`), batch가 클수록 GPU 처리량이 오른다. task가 9개이므로 task당 여러 sample이 모이도록 batch를 수십 단위로 잡아야 효과가 있다(batch 72에서 35.9 crops/s, [측정](../reports/batching/README.md)). 각 rank는 서로 다른 crop/mask를 sample하며 DDP가 gradient를 평균한다.
+| 옵션 (`training:`) | 기본값 | 의미 |
+|---|---|---|
+| `batch_size` | 2 | rank당 microbatch의 protein 수 |
+| `accumulation_steps` | 1 | optimizer step 하나 = microbatch K개. DDP gradient all-reduce는 마지막 microbatch에서 한 번만 한다(`no_sync`) |
+| `pack_size` | 0 | packed group당 최대 sample 수. 0은 같은 task 전부. 작은 GPU에서 peak memory를 제한하며 sample별 loss는 바뀌지 않는다 |
+| `loader_workers` | 0 | crop·mask를 미리 만드는 background process 수(forkserver/spawn). 0은 main process에서 만든다. `train()`을 직접 부르는 script는 `if __name__ == "__main__":` guard가 필요하다 |
+| `dist_backend` | auto | auto는 CUDA면 nccl, CPU면 gloo. gloo + CUDA는 GPU 하나를 여러 rank가 나눠 쓰는 시험용 |
 
-Regularizer 통계는 rank-local이다. 전역 batch의 variance/covariance를 계산하는 distributed regularizer와 같지 않다. 두 rank의 CPU/Gloo smoke 실행은 검증했다. CUDA/NCCL 및 실제 Slurm submission은 검증하지 않았다.
+- **Sample은 (seed, rank, step, sample 번호)의 순수 함수다.** sampler 상태를 checkpoint에 두지 않으므로 resume은 step 번호만으로 정확히 이어지고, worker 수가 달라도 같은 sample이 나온다(`test_resume_is_exact_with_workers_and_accumulation`, `test_step_loader_workers_match_in_process`). 이 방식은 checkpoint format 4이며, format 3 checkpoint의 weight는 읽지만 그 학습을 resume하지는 않는다.
+- **Batch:** microbatch 안에서 같은 task의 sample들은 하나의 disjoint-union batch로 계산한다. graph edge는 record 안에만 생기고, Transformer와 predictor attention은 record별 padding으로 서로를 보지 않으며, loss와 진단값은 record별로 계산한다. 결과는 sample을 하나씩 계산한 것과 같다(`test_packed_group_equals_separate_samples`). task가 9개이므로 task당 여러 sample이 모이도록 batch를 수십 단위로 잡아야 처리량이 오른다([측정](../reports/batching/README.md)).
+- **Accumulation:** metrics의 `samples`에는 모든 microbatch의 sample이 들어가고, `regularization`은 microbatch별 목록이 된다. task별 loss 평균은 microbatch 안에서 하므로, `batch_size=B, accumulation_steps=K`는 `batch_size=B×K` 한 번과 수치가 정확히 같지는 않다. 유효 batch는 `world × K × B`이고 learning rate는 자동으로 조정하지 않는다.
+- **정밀도:** float32 전용이다. TF32는 속도 이득이 없었고 loss의 회전 불변 오차를 3e-7에서 6e-4로 키웠다. bf16 autocast는 지원하지 않는다([측정](../reports/training_env/README.md)).
+- **Resume에서 바꿔도 되는 옵션:** device, threads, log/save 주기, `loader_workers`, `pack_size`, `dist_backend`. `accumulation_steps`는 최적화를 바꾸므로 바꿀 수 없다. world size도 같아야 한다.
+- **Regularizer 통계는 rank-local이다.** 전역 batch의 variance/covariance를 계산하는 distributed regularizer와 같지 않다.
 
-Slurm 예시:
-
-```bash
-MANIFEST=/absolute/path/manifest.jsonl OUTDIR=/absolute/path/runs/jepa \
-  sbatch --partition=YOUR_PARTITION --account=YOUR_ACCOUNT scripts/train_slurm.sh
-```
-
-기본 스크립트는 1 node, 4 GPU다. 실제 cluster policy에 맞춰 GPU/CPU/memory/time를 수정한다. 자동으로 사용자 cluster에 job을 제출하지 않는다.
+검증 범위([기록](../reports/training_env/README.md)):
+- CPU gloo 2 rank: accumulation과 loader worker를 켠 4 step 학습을 중간에 멈췄다가 resume한 결과가 연속 학습과 bit 단위로 같다.
+- GPU 1장을 gloo 2 rank가 나눠 쓰는 CuEq CUDA 학습: 동작하고 resume된다. 연속 학습과의 weight 차이는 최대 1.4e-5이며, CUDA atomic 연산의 비결정성 때문이다.
+- **NCCL 다중 GPU와 다중 node Slurm은 GPU가 한 장인 환경이라 실행하지 못했다.**
 
 ## 6. Held-out pretext evaluation
 
@@ -78,7 +92,7 @@ protein-jepa evaluate --checkpoint runs/reference_real/last.pt \
 
 ## 7. 운영상 현재 한계
 
-CPU reference는 correctness baseline이며 high-throughput GPU implementation을 대체하지 않는다. Neighbor discovery는 chunked O(N²) 거리 계산, sequence/internal Transformer는 record별 실행이다. AMP, gradient accumulation/no_sync scheduling, asynchronous sharded input pipeline, torch.compile/CUDA graphs는 이번 release에 없다.
+CPU reference는 correctness baseline이며 high-throughput GPU implementation을 대체하지 않는다. Neighbor discovery는 record별 padded O(N²) 거리 계산이다. Gradient accumulation(`no_sync`), background sample loader, packed batch는 있다(5절). AMP(측정상 정밀도 손실), torch.compile/CUDA graphs는 없다.
 
 Memory/throughput 측정을 한 뒤 fixed-token packing, accelerated radius graph, activation checkpointing을 확장한다. 검증 없이 128/256 config가 어떤 GPU 메모리에도 들어간다고 가정하지 않는다.
 
@@ -88,4 +102,4 @@ The checkpoint fingerprint hashes the manifest text, not all NPZ bytes. Do not m
 
 ## Rigid augmentation
 
-`rigid_augmentation` defaults to **false** since v0.4: the structure path, typed latent heads and every loss/regularizer are exactly SO(3)-equivariant or invariant and use only relative geometry, so a shared rigid transform changes loss and gradients only at float precision (measured on 1UBQ over all nine tasks: relative loss difference ≤1.8e-7, gradient ≤3.5e-5, reference CPU and CuEq CUDA). When enabled, it applies a shared proper rotation and translation to the parent crop before teacher/student view construction. `translation_std: 1.0` is in Angstrom. The same saved sampler RNG drives crop, rigid augmentation, and masks, so the exact-resume test covers their random state. No reflection augmentation or independent teacher/student rotation is used.
+`rigid_augmentation` defaults to **false**: the structure path, typed latent heads and every loss/regularizer are exactly SO(3)-equivariant or invariant and use only relative geometry, so a shared rigid transform changes loss and gradients only at float precision (measured on 1UBQ over all nine tasks: relative loss difference ≤1.8e-7, gradient ≤3.5e-5, reference CPU and CuEq CUDA). When enabled, it applies a shared proper rotation and translation to the parent crop before teacher/student view construction. `translation_std: 1.0` is in Angstrom. One per-sample generator, derived from (seed, rank, step, sample index), drives crop, rigid augmentation and masks, so resume and loader workers reproduce them exactly. No reflection augmentation or independent teacher/student rotation is used.

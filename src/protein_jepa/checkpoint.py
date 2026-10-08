@@ -5,17 +5,19 @@ import os
 import torch
 
 # 3 = typed latent heads (EMA with encoders) read by the predictor.
-FORMAT_VERSION = 3
+# 4 = same weights; samples are a pure function of the step (no sampler state).
+FORMAT_VERSION = 4
+READABLE = (3, 4)
 
 
-def rng_state(generator):
-    return {"cpu": torch.get_rng_state(), "sampler": generator.get_state(),
+def rng_state():
+    """Dropout RNG only; training samples are derived from the step number."""
+    return {"cpu": torch.get_rng_state(),
             "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else []}
 
 
-def restore_rng(state, generator):
+def restore_rng(state):
     torch.set_rng_state(state['cpu'].cpu())
-    generator.set_state(state['sampler'].cpu())
     if state['cuda']:
         if not torch.cuda.is_available():
             raise RuntimeError("Checkpoint has CUDA RNG state but this run has no CUDA device.")
@@ -48,6 +50,6 @@ def load_checkpoint(path):
     if version in (1, 2):
         raise ValueError(f"Checkpoint format {version} predates the typed latent heads "
                          "and predictor interface; retrain instead.")
-    if version != FORMAT_VERSION:
+    if version not in READABLE:
         raise ValueError("Unsupported checkpoint format.")
     return payload

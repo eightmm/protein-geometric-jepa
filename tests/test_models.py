@@ -100,7 +100,7 @@ def test_instance_target_removes_shared_component(tiny_cfg):
     s=z.s[:,:d.scalar]
     torch.testing.assert_close(s.mean(0),torch.zeros(d.scalar),atol=1e-5,rtol=0)
     torch.testing.assert_close(s.std(0,unbiased=False),torch.ones(d.scalar),atol=1e-3,rtol=0)
-    # Per-token layer norm keeps the shared direction dominant (the v0.3.0 failure).
+    # Per-token layer norm keeps the shared direction dominant (an earlier failure).
     ln=make_target(h).s[:,:d.scalar]
     assert ((ln-ln.mean(0)).square().sum()/ln.square().sum())<.1
 

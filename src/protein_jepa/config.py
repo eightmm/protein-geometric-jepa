@@ -38,7 +38,7 @@ class ModelConfig:
     radius_atom: float = 5.0
     radius_residue: float = 12.0
     max_neighbors: int = 24
-    # 'local': per-residue SC view (v0.2 contract). 'spatial' (opt-in experiment):
+    # 'local': per-residue SC view (the default contract). 'spatial' (opt-in experiment):
     # SC atoms also see other residues' SC atoms.
     sc_context: str = "local"
     backend: str = "reference"
@@ -54,7 +54,7 @@ class ModelConfig:
     effdock_distance_decay: bool = True
     effdock_norm_rescale: bool = True
     effdock_smooth_cutoff: bool = True
-    # Opt-in encoder experiments (v0.3 defaults keep the v0.2 operator family):
+    # Opt-in encoder experiments (defaults keep the original operator family):
     # axis-projection gate invariants, bilinear cross-degree FFN, and a
     # per-destination envelope radius that vanishes where top-k truncates.
     effdock_directional: bool = False
@@ -163,6 +163,16 @@ class TrainConfig:
     log_every: int = 10
     device: str = "cpu"
     threads: int = 2
+    # Optimizer step = accumulation_steps microbatches of batch_size per rank;
+    # per-task loss balancing happens within each microbatch.
+    accumulation_steps: int = 1
+    # Background processes that build crops/masks ahead of the GPU (0 = in-process).
+    loader_workers: int = 0
+    # Max samples per packed group (0 = all same-task samples of a microbatch);
+    # bounds peak memory without changing the per-sample losses.
+    pack_size: int = 0
+    # auto: nccl on CUDA, gloo on CPU. gloo on CUDA lets several ranks share one GPU (testing).
+    dist_backend: str = "auto"
     allow_observed_order: bool = False
     tasks: list[str] = field(default_factory=lambda: [
         "seq_to_bb", "bb_to_seq", "cart_to_internal", "internal_to_bb",
@@ -188,6 +198,10 @@ class TrainConfig:
             raise ValueError("translation_std must be nonnegative.")
         if self.threads < 1 or self.grad_clip <= 0 or self.weight_decay < 0:
             raise ValueError("Invalid threads/gradient clipping/weight decay.")
+        if self.accumulation_steps < 1 or self.loader_workers < 0 or self.pack_size < 0:
+            raise ValueError("accumulation_steps must be positive; loader_workers/pack_size nonnegative.")
+        if self.dist_backend not in {"auto", "nccl", "gloo"}:
+            raise ValueError("dist_backend must be auto, nccl or gloo.")
         if self.semantic_regularizer not in {"variance", "sphere_mmd"}:
             raise ValueError("semantic_regularizer must be variance or sphere_mmd.")
         if self.circular_regularizer not in {"floor", "torus_mmd"}:

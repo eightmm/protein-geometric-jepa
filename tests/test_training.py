@@ -45,7 +45,7 @@ def test_every_teacher_target_parameter_is_trained_online(model,protein):
         return {n for n,p in model.online.named_parameters()
                 if p.grad is not None and float(p.grad.abs().max())>1e-7}
     # Regularizers OFF: heads must be trained by the prediction loss itself
-    # (the v0.2 projector got gradient only from a regularizer).
+    # (an earlier projector got gradient only from a regularizer).
     cfg=TrainConfig(variance_weight=0.,covariance_weight=0.,circular_weight=0.)
     def cycle():
         optimizer.zero_grad(set_to_none=True)
@@ -98,7 +98,6 @@ def test_resume_is_exact(tiny_cfg,tmp_path):
     assert a['step']==b['step']==4
     for key in a['model']:
         torch.testing.assert_close(a['model'][key],b['model'][key],atol=0,rtol=0)
-    torch.testing.assert_close(a['rng'][0]['sampler'],b['rng'][0]['sampler'])
 
 
 def test_resume_rejects_dataset_change(tiny_cfg,tmp_path):
@@ -206,3 +205,46 @@ def test_retrieval_of_a_record_ignores_other_records():
     packed,_=node_retrieval(pred,target,valid,torch.tensor([0,0,0,1,1]),2)
     alone,_=node_retrieval(pred[3:],target[3:],valid[3:],torch.zeros(2,dtype=torch.long),1)
     assert float(packed[1])==float(alone[0])
+
+
+def test_resume_is_exact_with_workers_and_accumulation(tiny_cfg,tmp_path):
+    """Samples depend only on the step: a run split by stop/resume and built
+    by background workers equals one in-process run, with accumulation on."""
+    import json
+    cfg=replace(tiny_cfg,dropout=.1)   # dropout RNG must survive worker start-up
+    base=TrainConfig(steps=4,batch_size=2,accumulation_steps=2,crop_lengths=[10,12],
+                     log_every=1,save_every=2,threads=1,mask_min_span=2)
+    dataset=SyntheticDataset(4,14,33)
+    tiny_cfg=cfg
+    train(tiny_cfg,base,dataset,tmp_path/'full')
+    rows=[json.loads(x) for x in (tmp_path/'full'/'metrics.jsonl').read_text().splitlines()]
+    assert all(len(r['samples'])==len(r['tasks'])==4 and len(r['regularization'])==2 for r in rows)
+    workers=replace(base,loader_workers=2)
+    train(tiny_cfg,workers,dataset,tmp_path/'resumed',stop_after=2)
+    train(tiny_cfg,workers,dataset,tmp_path/'resumed',resume=tmp_path/'resumed'/'last.pt')
+    a,b=load_checkpoint(tmp_path/'full'/'last.pt'),load_checkpoint(tmp_path/'resumed'/'last.pt')
+    for key in a['model']:
+        torch.testing.assert_close(a['model'][key],b['model'][key],atol=0,rtol=0)
+
+
+def test_step_loader_workers_match_in_process():
+    from protein_jepa.data.sampling import step_loader
+    cfg=TrainConfig(batch_size=3,crop_lengths=[10],mask_min_span=2)
+    dataset=SyntheticDataset(5,16,3)
+    inline=list(step_loader(dataset,cfg,1,2,7))
+    workers=list(step_loader(dataset,replace(cfg,loader_workers=3),1,2,7))
+    assert [s for s,_ in inline]==[s for s,_ in workers]==list(range(2,7))
+    for (_,a),(_,b) in zip(inline,workers):
+        for (ra,oa),(rb,ob) in zip(a[0],b[0]):
+            assert oa.task_name==ob.task_name and torch.equal(ra.xyz,rb.xyz)
+            assert torch.equal(oa.target_residues,ob.target_residues)
+
+
+def test_pack_size_bounds_groups_without_changing_losses(model):
+    from protein_jepa.data.sampling import make_microbatch
+    cfg=TrainConfig(batch_size=18,crop_lengths=[12],mask_min_span=2)
+    batch=make_microbatch(SyntheticDataset(4,14,5),cfg,0,0,0)
+    with torch.no_grad():
+        whole,_=model(batch,cfg)
+        single,_=model(batch,replace(cfg,pack_size=1))
+    torch.testing.assert_close(whole,single,atol=2e-5,rtol=2e-5)

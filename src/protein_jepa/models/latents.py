@@ -11,7 +11,7 @@ A view's latent bundle Z = (sem, l1, l2, circ, dir, frame):
 Missing kinds have zero channels. Heads sit after each view encoder and are
 EMA-tracked with it (design B): the context side feeds online Z to the
 predictor, so every head weight that shapes a teacher target is trained by
-the prediction loss itself, not only by a regularizer (the v0.2 defect).
+the prediction loss itself, not only by a regularizer (an earlier defect).
 """
 from dataclasses import dataclass, fields, replace
 import math

@@ -117,7 +117,7 @@ def axis_projections(h: Fiber, unit: Tensor) -> Tensor:
 
 
 class GatedFFN(nn.Module):
-    """v0.2 FFN: channel mixing and norm gates only, no cross-degree products."""
+    """Default FFN: channel mixing and norm gates only, no cross-degree products."""
     def __init__(self, dims: FiberDims, expansion: int = 2):
         super().__init__()
         wide = FiberDims(dims.scalar*expansion, dims.vector*expansion, dims.tensor*expansion)

@@ -352,11 +352,11 @@ EMA/stop-gradient/normalization 자체만으로 collapse 방지를 보장하지 
 
 ## 22. Distributed와 checkpoint
 
-DDP는 task별로 일부 parameter만 사용하므로 `find_unused_parameters=True`를 사용한다. 모든 rank가 같은 step의 task type을 사용하고, 각 rank의 protein/crop/mask는 독립 sampler RNG로 생성한다.
+DDP는 task별로 일부 parameter만 사용하므로 `find_unused_parameters=True`를 사용한다. 모든 rank가 같은 step의 task type을 사용하고, 각 rank의 protein/crop/mask는 (seed, rank, step, sample 번호)에서 유도한 sample별 generator로 만든다.
 
 Sample index별 task 배정은 rank와 무관하다. 따라서 같은 step에서 모든 rank의 task 구성이 같다. Regularizer 통계는 rank-local이다. 전역 batch 통계와 동등하지 않다. DDP는 gradient를 평균한다.
 
-Checkpoint는 online/teacher/predictor, optimizer, scheduler, global step, rank별 sampler RNG 및 torch CPU/CUDA RNG, configuration, manifest fingerprint와 world size를 저장한다. Atomic replace와 weights_only load를 사용한다.
+Checkpoint는 online/teacher/predictor, optimizer, scheduler, global step, rank별 torch CPU/CUDA RNG(dropout용; sample은 step 번호로 재현된다), configuration, manifest fingerprint와 world size를 저장한다. Atomic replace와 weights_only load를 사용한다.
 
 Resume는 같은 world size, model/backend, task schedule, 학습 계획 및 dataset manifest에서 지원한다. 실행을 일찍 끊으려면 총 steps를 바꾸지 말고 `--stop-after`를 사용한다.
 
