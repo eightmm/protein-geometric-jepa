@@ -122,3 +122,15 @@ Codex review gate의 첫 판정은 **fail**이었습니다. 실제로 재현된 
 - typed vs Euclidean의 품질 차이(대규모 학습 필요)
 - direction·frame head와 heat-kernel MMD 옵션의 효과
 - RoPE(미구현)
+
+## 부록: single chain crop overfit
+
+Record를 single chain으로 강제하고, crop을 그 chain 안에서 CA 관측 비율 0.5 이상인 위치로 고르도록 바꾼 뒤 같은 22개 chain으로 다시 돌렸습니다. 설정은 3000 step, covariance 0.04, CuEq CUDA입니다.
+
+| 지표 | 시작 → 끝 |
+|---|---|
+| loss | 3.19 → 1.27 (40%) |
+| retrieval | 0.017 → 0.073 (우연 수준의 4.5배, 계속 상승 중) |
+| effective rank | 31 → 13.7 |
+
+이 데이터는 모든 residue가 관측된 구조라서 crop 규칙은 이전과 같은 crop을 고릅니다. 앞의 covariance-on 실행(retrieval 0.111)과의 차이는 GPU 연산의 비결정성에서 오는 실행 간 편차입니다. 각 조건을 한 번씩만 돌렸기 때문에 편차의 크기는 측정하지 않았습니다. 증거: [reports/typed_latent/overfit22_chain_crop.*](../reports/typed_latent/).
