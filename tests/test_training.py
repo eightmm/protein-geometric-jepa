@@ -367,3 +367,20 @@ def test_window_inference_rejects_gaps_and_diagnostics_flag_full_collapse(model)
         model.encode_windows(synthetic_record(37,5),'backbone',window=8,stride=12)
     zero=equivariant_diagnostics([torch.zeros(6,4,3)],[torch.zeros(6,2,3,3)])
     assert zero['l1_dead_channels']==1.0 and zero['l2_dead_channels']==1.0
+
+
+def test_raw_reconstruction_ignores_unobserved_coordinates(model,protein):
+    """Unobserved coordinates may hold NaN; raw losses (and an angle-only
+    setup) must stay finite."""
+    xyz=protein.xyz.clone(); present=protein.present.clone()
+    present[3,1]=False; xyz[3,1]=float('nan')
+    broken=replace(protein,xyz=xyz,present=present)
+    obs=make_observation(broken,'bb_infill',.3,torch.Generator().manual_seed(2),min_span=2)
+    for weights in ((1.,1.),(1.,0.)):
+        cfg=TrainConfig(node_weight=0.,global_weight=0.,atom_weight=0.,raw_angle_weight=weights[0],
+                        raw_coordinate_weight=weights[1])
+        model.zero_grad(set_to_none=True)
+        loss,_,_=model.task_loss(broken,obs,cfg)
+        assert torch.isfinite(loss)
+        loss.backward()
+        assert all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)

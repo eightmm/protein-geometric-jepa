@@ -262,7 +262,7 @@ class ProteinJEPA(nn.Module):
         raw_angle = raw_coordinate = node_loss.detach()*0
         if raw:
             raw_angle, raw_coordinate = self._raw_losses(batch, prediction, query, atom_visible,
-                                                         spec.equivariant)
+                                                         spec.equivariant, train_cfg)
         loss = (train_cfg.node_weight*node_loss + train_cfg.global_weight*global_loss
                 + train_cfg.atom_weight*atom_loss + train_cfg.raw_angle_weight*raw_angle
                 + train_cfg.raw_coordinate_weight*raw_coordinate)
@@ -305,27 +305,31 @@ class ProteinJEPA(nn.Module):
             results.append((loss[b], info, regularizer_inputs[b]))
         return results
 
-    def _raw_losses(self, batch, prediction, query, atom_visible, equivariant):
+    def _raw_losses(self, batch, prediction, query, atom_visible, equivariant, train_cfg):
         """Raw-geometry baseline per record: 1 - cos over valid torsions of the
         query residues, and the CA offset from the visible-CA centroid (Angstrom/10;
         equivariant contexts only). Targets come from the full crop."""
         owner, size = batch.batch, batch.size
-        with torch.no_grad():
-            bb, chi = backbone_features(batch), chi_features(batch)
-            angles = torch.cat((bb.periodic, chi.encoded), 1)[query]
-            valid = torch.cat((bb.periodic_valid, chi.valid), 1)[query]
-        per = 1-(prediction.raw_angles*angles).sum(-1)
-        angle = _masked_term(per, valid, owner[query], size)[0]
-        coordinate = angle.detach()*0
-        if equivariant:
-            ca = batch.xyz[:, 1].float()
-            seen = atom_visible[:, 1] & batch.present[:, 1]
-            centroid, count = segment_mean(ca, owner, size, seen)
-            target = (ca[query]-centroid[owner[query]])/10
-            ok = batch.present[query, 1] & (count[owner[query]] > 0)
-            error = (prediction.raw_coordinate-target).square().sum(-1)/3
-            coordinate = segment_mean(error[ok], owner[query][ok], size)[0]
-        return angle, coordinate+prediction.raw_coordinate.sum()*0
+        zero = (prediction.raw_angles.sum()+prediction.raw_coordinate.sum())*0
+        angle = coordinate = zero.expand(size)
+        if train_cfg.raw_angle_weight > 0:
+            with torch.no_grad():
+                bb, chi = backbone_features(batch), chi_features(batch)
+                angles = torch.cat((bb.periodic, chi.encoded), 1)[query]
+                valid = torch.cat((bb.periodic_valid, chi.valid), 1)[query]
+            per = 1-(prediction.raw_angles*angles).sum(-1)
+            angle = angle+_masked_term(per, valid, owner[query], size)[0]
+        if train_cfg.raw_coordinate_weight > 0 and equivariant:
+            # Unobserved coordinates may hold any value (even NaN): mask first.
+            present = batch.present[:, 1]
+            ca = torch.where(present[:, None], batch.xyz[:, 1].float(), 0.)
+            centroid, count = segment_mean(ca, owner, size, atom_visible[:, 1] & present)
+            ok = present[query] & (count[owner[query]] > 0)
+            chosen = query[ok]
+            target = (ca[chosen]-centroid[owner[chosen]])/10
+            error = (prediction.raw_coordinate[ok]-target).square().sum(-1)/3
+            coordinate = coordinate+segment_mean(error, owner[chosen], size)[0]
+        return angle, coordinate
 
     def forward(self, records_and_observations, train_cfg: TrainConfig):
         by_task, logs, groups = {}, [], {}
