@@ -72,7 +72,7 @@ MANIFEST=/abs/manifest.jsonl OUTDIR=/abs/runs/jepa CONFIG=configs/effdock_cueq_g
 
 | 옵션 (`training:`) | 기본값 | 의미 |
 |---|---|---|
-| `optimizer` | adamw | `muon`: hidden layer의 `Linear` weight와 Transformer QKV 행렬은 Muon, 나머지(embedding, direction seed, CuEq tensor product weight, 상대 위치 bias, 1D 파라미터, latent head)는 AdamW. `match_rms_adamw` 보정으로 learning rate 하나를 같이 쓴다. PyTorch 2.9 이상 필요 |
+| `optimizer` | muon | `adamw`는 전부 AdamW. `muon`: hidden layer의 `Linear` weight와 Transformer QKV 행렬은 Muon, 나머지(embedding, direction seed, CuEq tensor product weight, 상대 위치 bias, 1D 파라미터, latent head)는 AdamW. `match_rms_adamw` 보정으로 learning rate 하나를 같이 쓴다. 22개 단백질 비교에서 AdamW 대비 정답 찾기 정확도 2.6배([기록](../reports/optimizer/README.md)). PyTorch 2.9 이상 필요 |
 | `muon_momentum` | 0.95 | Muon momentum (Nesterov) |
 | `decay_exclusions` | true | 1D 파라미터(bias, norm gain, residual scale), embedding, 상대 위치 bias table에는 weight decay를 주지 않는다. false면 전부 decay(이전 동작) |
 | `keep_checkpoints` | 0 | `last.pt` 외에 최근 N개 저장본을 `step_<N>.pt`로 남긴다 |

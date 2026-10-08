@@ -94,7 +94,8 @@ def build_optimizer(model: nn.Module, cfg, device: torch.device, learning_rate: 
     wd = cfg.weight_decay if weight_decay is None else weight_decay
     muon = cfg.optimizer == "muon"
     if muon and not hasattr(torch.optim, "Muon"):
-        raise RuntimeError("optimizer: muon needs torch.optim.Muon (PyTorch >= 2.9).")
+        raise RuntimeError("optimizer: muon needs torch.optim.Muon (PyTorch >= 2.9); "
+                           "upgrade torch or set training.optimizer: adamw.")
     to_muon, decay, no_decay = parameter_groups(model, muon, cfg.decay_exclusions)
     groups = [g for g in ({"params": decay, "weight_decay": wd},
                           {"params": no_decay, "weight_decay": 0.0}) if g["params"]]

@@ -19,5 +19,6 @@ latents in every view. Muon runs on hidden `Linear` and QKV matrices
 AdamW. One seed and a memorization setting: the gap needs confirming on a
 held-out set before relying on it, but it is large.
 
-The default stays `optimizer: adamw` because Muon needs PyTorch >= 2.9 while
-the package allows torch >= 2.2.
+After this comparison the default became `optimizer: muon` and the package
+requires PyTorch >= 2.9 (where `torch.optim.Muon` exists); `optimizer: adamw`
+remains available.

@@ -139,9 +139,10 @@ class TrainConfig:
     batch_size: int = 2
     learning_rate: float = 0.0003
     weight_decay: float = 0.01
-    # adamw, or muon (Muon on hidden weight matrices + AdamW for the rest;
-    # PyTorch >= 2.9). One learning_rate serves both (match_rms_adamw scaling).
-    optimizer: str = "adamw"
+    # muon (Muon on hidden weight matrices + AdamW for the rest) or adamw.
+    # Muon reached 2.6x the 22-protein retrieval of AdamW (reports/optimizer).
+    # One learning_rate serves both (match_rms_adamw scaling).
+    optimizer: str = "muon"
     muon_momentum: float = 0.95
     # No weight decay on 1D parameters (biases, norm gains, residual scales),
     # embeddings and the relative-position bias table. False decays everything.
