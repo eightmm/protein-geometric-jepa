@@ -15,7 +15,7 @@ from torch.nn import functional as F
 from ..config import ModelConfig
 from .fibers import Fiber, FiberDims, FiberLinear, cat_fibers
 from .effdock_blocks import FiberRMSNorm, EquivariantFFN, channel_scale
-from .latents import TypedLatent, TypedLatentHead, ChannelMix, latent_spec, LatentSpec
+from .latents import TypedLatent, TypedLatentHead, ChannelMix, latent_spec, LatentSpec, safe_sqrt
 from ..data.constants import RESIDUE_ATOMS, AA3, ATOM_ID
 from ..data.batch import segment_mean, padded_layout, to_padded
 
@@ -25,7 +25,7 @@ LEVELS = {"node": 0, "global": 1, "atom": 2}
 
 def _rms(x: Tensor, dims: tuple[int, ...], dof: int) -> Tensor:
     """Per-token RMS per magnetic component (3 for l=1, 5 for l=2)."""
-    return (x.square().sum(dims)/dof).mean(-1, keepdim=True).sqrt()
+    return safe_sqrt((x.square().sum(dims)/dof).mean(-1, keepdim=True))
 
 
 def reference_rms(h: Fiber, valid: Tensor, batch: Tensor | None = None,

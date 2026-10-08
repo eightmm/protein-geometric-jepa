@@ -158,7 +158,13 @@ def _rms(x: Tensor, dims: tuple[int, ...], dof: int) -> Tensor:
     """Per-token RMS per magnetic component (3 for l=1, 5 for l=2)."""
     if x.shape[1] == 0:
         return x.new_zeros(len(x), 1)
-    return (x.square().sum(dims)/dof).mean(-1, keepdim=True).sqrt()
+    return safe_sqrt((x.square().sum(dims)/dof).mean(-1, keepdim=True))
+
+
+def safe_sqrt(m: Tensor) -> Tensor:
+    """sqrt with a zero (not NaN) gradient at 0: zero rows are common (missing
+    geometry), and targets carry gradient in the teacher-free baseline."""
+    return torch.where(m > 0, m.clamp_min(1e-30).sqrt(), torch.zeros_like(m))
 
 
 def _per_token(value: Tensor, index: Tensor) -> Tensor:

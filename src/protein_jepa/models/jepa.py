@@ -71,7 +71,7 @@ def equivariant_diagnostics(vectors: list, tensors: list, gram_channels: int = 4
             continue
         rms = (x.flatten(2).square().sum(-1)/dof).mean(0).sqrt()
         out[f"{name}_rms"] = float(rms.mean())
-        out[f"{name}_dead_channels"] = float((rms < 0.1*rms.mean()).float().mean())
+        out[f"{name}_dead_channels"] = float((rms <= 0.1*rms.mean()).float().mean())
     v = torch.cat(vectors)[:, :gram_channels]
     if v.shape[1] >= 2 and len(v) >= 2:
         upper = torch.triu_indices(v.shape[1], v.shape[1], device=v.device)
@@ -253,7 +253,7 @@ class ProteinJEPA(nn.Module):
         if atom_residues is not None and len(atom_residues) and len(target.atom_residue):
             # Topology queries meet observed teacher atoms by (residue, slot), up
             # to the residue's symmetric renaming.
-            with torch.no_grad():
+            with targets_grad:
                 atom_target = make_target(target.atoms, None, floor, instance=True,
                                           batch=owner[target.atom_residue], size=size)
             atom_loss = symmetric_atom_loss(prediction.atoms, atom_target, target.atom_residue,
@@ -412,8 +412,8 @@ class ProteinJEPA(nn.Module):
         a mean of crop globals is not a full-protein global (spec 25).
         Returns ({view: EncodedView over the whole record}, window starts).
         """
-        if window < 1 or stride < 1:
-            raise ValueError("window and stride must be positive.")
+        if window < 1 or not 1 <= stride <= window:
+            raise ValueError("Need window >= 1 and 1 <= stride <= window so every residue is covered.")
         n = len(record)
         starts = [0] if n <= window else list(range(0, n-window+1, stride))
         if starts[-1]+window < n:

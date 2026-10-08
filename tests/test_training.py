@@ -292,6 +292,28 @@ def test_teacher_free_routes_gradient_through_targets(model,protein):
     assert any(p.grad is not None and bool(p.grad.abs().sum()) for p in chi.parameters())
     assert all(p.grad is None for p in model.teacher.parameters())
     assert 'chi_target' in details['regularization']
+    # Geometric and atom targets: zero-RMS rows must not make gradients NaN,
+    # and atom targets carry gradient like the node targets.
+    for task in ('chi_to_sc','aa_infill'):
+        model.zero_grad(set_to_none=True)
+        obs=make_observation(protein,task,.3,torch.Generator().manual_seed(2),min_span=2)
+        loss,_,_=model.task_loss(protein,obs,replace(cfg,node_weight=float(task!='aa_infill'),
+                                                     global_weight=0.))
+        loss.backward()
+        grads=[p.grad for p in model.online.parameters() if p.grad is not None]
+        assert grads and all(torch.isfinite(g).all() for g in grads),task
+    import protein_jepa.models.jepa as jepa
+    seen=[]
+    original=jepa.make_target
+    def spy(*a,**k):
+        out=original(*a,**k); seen.append(out.s.requires_grad); return out
+    jepa.make_target=spy
+    try:
+        obs=make_observation(protein,'aa_infill',.3,torch.Generator().manual_seed(2),min_span=2)
+        model.task_loss(protein,obs,cfg)
+    finally:
+        jepa.make_target=original
+    assert seen==[True]
 
 
 def test_semantic_cosine_and_mean_readout_options(tiny_cfg,protein):
@@ -336,3 +358,12 @@ def test_equivariant_collapse_diagnostics_are_logged(model,protein):
     _,details=model([(protein,obs)],TrainConfig())
     reg=details['regularization']['bb']
     assert {'l1_rms','l2_rms','l1_dead_channels','l1_gram_rank'}<=reg.keys()
+
+
+def test_window_inference_rejects_gaps_and_diagnostics_flag_full_collapse(model):
+    from protein_jepa.data.synthetic import synthetic_record
+    from protein_jepa.models.jepa import equivariant_diagnostics
+    with pytest.raises(ValueError,match='covered'):
+        model.encode_windows(synthetic_record(37,5),'backbone',window=8,stride=12)
+    zero=equivariant_diagnostics([torch.zeros(6,4,3)],[torch.zeros(6,2,3,3)])
+    assert zero['l1_dead_channels']==1.0 and zero['l2_dead_channels']==1.0
