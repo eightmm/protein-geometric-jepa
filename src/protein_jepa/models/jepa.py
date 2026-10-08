@@ -301,12 +301,18 @@ class ProteinJEPA(nn.Module):
                     regularizer_inputs[b][name] = parts
         # One device->host transfer for every per-record diagnostic.
         counts = terms.pop('counts')
+        # A record contributes to its loss only through terms with weight > 0.
+        supervised = ((train_cfg.node_weight > 0) & (counts['sem'] > 0)
+                      | (train_cfg.global_weight > 0) & global_supervised
+                      | (train_cfg.atom_weight > 0) & (atom_count > 0)
+                      | (train_cfg.raw_angle_weight > 0) & (raw_angle_count > 0)
+                      | (train_cfg.raw_coordinate_weight > 0) & (raw_coordinate_count > 0))
         terms.pop('valid_targets')
         names = list(terms)
         table = torch.stack([terms[k].detach() for k in names]+[counts[k] for k in names]+[
             node_loss.detach(), global_loss.detach(), atom_loss.detach(), top1, retrieved.float(),
             low, atom_count, raw_angle.detach(), raw_coordinate.detach(), raw_angle_count,
-            raw_coordinate_count, global_supervised.to(low.dtype)]).T.tolist()
+            raw_coordinate_count, global_supervised.to(low.dtype), supervised.to(low.dtype)]).T.tolist()
         results = []
         k = len(names)
         for b, row in enumerate(table):
@@ -315,10 +321,10 @@ class ProteinJEPA(nn.Module):
             if info["valid_targets"]:
                 info.update({name: row[i] for i, name in enumerate(names) if row[k+i] > 0})
             (node, glob, atom, hit, n, low_b, atoms_b, angle_b, coordinate_b, angles_n, coords_n,
-             global_b) = row[2*k:]
+             global_b, supervised_b) = row[2*k:]
             info.update(target_low_rms=low_b, task=observations[b].task_name, node_loss=node,
                         global_loss=glob, atom_loss=atom, valid_atom_targets=int(atoms_b),
-                        valid_global_target=bool(global_b))
+                        valid_global_target=bool(global_b), supervised=bool(supervised_b))
             if raw:
                 # Raw targets have their own validity, independent of the latent targets.
                 info.update(raw_angle_loss=angle_b, raw_coordinate_loss=coordinate_b,

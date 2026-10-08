@@ -6,6 +6,7 @@ the CPU; the training loop moves them to the device.
 """
 from dataclasses import replace
 import hashlib
+import os
 import signal
 import threading
 import torch
@@ -60,12 +61,13 @@ def _identity(item):
 
 def _worker_init(_):
     torch.set_num_threads(1)  # many workers x many threads oversubscribes the host
-    # Launchers (torchrun, Slurm) signal the whole process group. Workers ignore
-    # stop signals so the trainer can finish its step and save; they exit when
-    # the trainer closes the loader (or dies: DataLoader workers watch it).
-    for name in ("SIGTERM", "SIGUSR1"):
-        if hasattr(signal, name):
-            signal.signal(getattr(signal, name), signal.SIG_IGN)
+    # Launchers (torchrun, Slurm) signal the trainer's whole process group.
+    # Workers leave that group, so the trainer can finish its step and save,
+    # while the DataLoader can still stop them (its SIGTERM comes from the
+    # parent, which PyTorch's worker handler honours). Ignoring SIGTERM instead
+    # would hang the loader's shutdown of a worker blocked on a full queue.
+    if hasattr(os, "setpgrp"):
+        os.setpgrp()
 
 
 def step_loader(dataset, cfg, rank: int, first: int, end: int):

@@ -516,7 +516,9 @@ def test_group_stop_signal_with_loader_workers(tmp_path):
                 marker = sys.argv[2]+'.sent'
                 if sys.argv[3] == 'signal' and not os.path.exists(marker):
                     open(marker, 'w').close()
-                    os.killpg(os.getpgid(0), signal.SIGTERM)   # like torchrun/Slurm
+                    # Like torchrun/Slurm: signal the trainer's process group
+                    # (this runs in a loader worker, whose parent is the trainer).
+                    os.killpg(os.getpgid(os.getppid()), signal.SIGTERM)
                 return super().__getitem__(i)
         if __name__ == '__main__':
             cfg = ModelConfig(scalar=16, vector=4, tensor=2, sequence_width=32, sequence_layers=1,
@@ -601,3 +603,23 @@ def test_evaluation_counts_global_and_atom_only_supervision(model,protein):
     summary=summarize_pairs(pairs,results)
     assert summary['bb_infill']['records']==1 and summary['bb_infill']['mean_global_loss'] is not None
     assert a['valid_atom_targets']>0 and summary['aa_infill']['records']==1
+
+
+def test_evaluation_ignores_records_supervised_only_by_disabled_terms(model,protein):
+    """Raw baseline (latent weights 0): a record without raw targets must not
+    dilute the mean loss even though it has latent targets."""
+    from protein_jepa.evaluate import summarize_pairs
+    cfg=TrainConfig(node_weight=0.,global_weight=0.,atom_weight=0.,raw_angle_weight=1.)
+    # CA kept on 2 of every 3 residues (latent BB targets exist), N/C and all
+    # sidechains removed: no torsion, chi or 4-CA pseudo-dihedral is defined.
+    present=protein.present.clone(); present[:,[0,2]]=False; present[:,4:]=False; present[::3,1]=False
+    no_angles=replace(protein,present=present)
+    obs=make_observation(protein,'seq_to_bb',.3,torch.Generator().manual_seed(2))
+    pairs=[(protein,obs),(no_angles,make_observation(no_angles,'seq_to_bb',.3,torch.Generator().manual_seed(2)))]
+    with torch.no_grad():
+        results=model.sample_losses(pairs,cfg)
+    assert results[1][1]['valid_targets']>0 and results[1][1]['raw_angle_targets']==0
+    assert results[0][1]['supervised'] and not results[1][1]['supervised']
+    summary=summarize_pairs(pairs,results)['seq_to_bb']
+    assert summary['records']==1
+    assert abs(summary['mean_pretext_loss']-float(results[0][0]))<1e-6
