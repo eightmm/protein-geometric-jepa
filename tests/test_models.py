@@ -343,3 +343,37 @@ def test_zero_sc_shape_projection_recovers_encoder_without_shape(tiny_cfg,protei
         assert_fiber_close(a[view].nodes,b[view].nodes,atol=0,rtol=0)
         assert_fiber_close(a[view].global_state,b[view].global_state,atol=0,rtol=0)
         assert_fiber_close(a[view].atoms,b[view].atoms,atol=0,rtol=0)
+
+
+def test_encode_windows_covers_long_records_and_stays_equivariant(model):
+    """Overlapping windows: one window reproduces encode(); a long record gets
+    every residue covered, per-window globals, and rotates correctly."""
+    from protein_jepa.data.synthetic import synthetic_record
+    from protein_jepa.geometry.primitives import random_rotation
+    short=synthetic_record(12,4)
+    views,starts=model.encode_windows(short,'backbone',window=16,stride=8)
+    assert starts==[0]
+    assert_fiber_close(views['bb'].nodes,model.encode(short,'backbone')['bb'].nodes)
+    long=synthetic_record(37,5)
+    views,starts=model.encode_windows(long,'all_atom',window=16,stride=8)
+    assert starts==[0,8,16,21] and len(views['aa'].global_state.s)==4
+    assert bool(views['aa'].node_valid.all())
+    # Residues 0-7 lie in the first window only: their atoms are that window's.
+    first=model.encode(long.crop(0,16),'all_atom')['aa']
+    keep=first.atom_residue<8
+    mine=views['aa'].atom_residue<8
+    assert torch.equal(views['aa'].atom_slot[mine],first.atom_slot[keep][first.atom_residue[keep].mul(37).add(first.atom_slot[keep]).argsort()])
+    # Window averaging is mode-independent; the backbone graph has no
+    # near-tied all-atom neighbours that a rotation could reorder at float noise.
+    r=random_rotation(torch.Generator().manual_seed(1))
+    bb,_=model.encode_windows(long,'backbone',window=16,stride=8)
+    moved,_=model.encode_windows(long.rigid_transform(r,torch.ones(3)),'backbone',window=16,stride=8)
+    assert_fiber_close(moved['bb'].nodes,bb['bb'].nodes.rotate(r),atol=1e-4,rtol=1e-4)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='needs a CUDA device')
+def test_encode_sequence_string_follows_the_model_device(tiny_cfg):
+    from protein_jepa.models.jepa import ProteinJEPA
+    model=ProteinJEPA(tiny_cfg).cuda().eval()
+    out=model.encode_sequence('MKVLAG')
+    assert out.nodes.s.device.type=='cuda' and len(out.nodes.s)==6

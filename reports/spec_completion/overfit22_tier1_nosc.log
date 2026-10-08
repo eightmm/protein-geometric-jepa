@@ -1,0 +1,12 @@
+{"step": 0, "seconds": 2e-06, "lr": 0.001, "loss": 3.151998, "node_top1": 0.016917, "chance": 0.016345, "effective_rank": 35.901218}
+{"step": 300, "seconds": 299.355352, "lr": 0.001, "loss": 1.801728, "node_top1": 0.024395, "chance": 0.016345, "effective_rank": 24.620747}
+{"step": 600, "seconds": 666.253328, "lr": 0.001, "loss": 1.602287, "node_top1": 0.02608, "chance": 0.016345, "effective_rank": 34.543518}
+{"step": 900, "seconds": 1065.44151, "lr": 0.001, "loss": 1.449565, "node_top1": 0.032763, "chance": 0.016345, "effective_rank": 38.866127}
+{"step": 1200, "seconds": 1471.069018, "lr": 0.001, "loss": 1.350124, "node_top1": 0.042986, "chance": 0.016345, "effective_rank": 42.669434}
+{"step": 1500, "seconds": 1906.121, "lr": 0.001, "loss": 1.360913, "node_top1": 0.051866, "chance": 0.016345, "effective_rank": 45.305927}
+{"step": 1800, "seconds": 2287.840193, "lr": 0.001, "loss": 1.308846, "node_top1": 0.064811, "chance": 0.016345, "effective_rank": 45.711811}
+{"step": 2100, "seconds": 2717.753163, "lr": 0.001, "loss": 1.262897, "node_top1": 0.07982, "chance": 0.016345, "effective_rank": 46.261986}
+{"step": 2400, "seconds": 3090.234703, "lr": 0.001, "loss": 1.24187, "node_top1": 0.095084, "chance": 0.016345, "effective_rank": 47.570107}
+{"step": 2700, "seconds": 3466.253628, "lr": 0.001, "loss": 1.167721, "node_top1": 0.10823, "chance": 0.016345, "effective_rank": 48.255665}
+{"step": 3000, "seconds": 3908.221289, "lr": 0.001, "loss": 1.159293, "node_top1": 0.121216, "chance": 0.016345, "effective_rank": 49.196739}
+{"records": 22, "pairs": 198, "steps": 3000, "converged_at_step": null, "loss_ratio": 0.3677961145701034}

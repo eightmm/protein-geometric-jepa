@@ -218,7 +218,7 @@ def test_ablation_writer_accepts_every_shipped_gpu_preset(tmp_path):
         subprocess.run([sys.executable, str(root/'scripts/make_effdock_ablations.py'),
                         '--base', str(root/'configs'/preset), '--output', str(out), '--seeds', '1'],
                        check=True, capture_output=True)
-        assert len(list(out.glob('*.yaml'))) == 27
+        assert len(list(out.glob('*.yaml'))) == 41
 
 
 def test_format1_checkpoint_rejected(tiny_cfg, tmp_path):
@@ -287,7 +287,7 @@ def test_checkpoint_from_before_new_architecture_options_still_loads(tiny_cfg, t
     from protein_jepa.config import model_config
     from protein_jepa.models.jepa import ProteinJEPA
     old_cfg = replace(tiny_cfg, pair_frame_features=False, sc_local_frame=False, sc_shape_features=False,
-                      global_latent_types='legacy')
+                      global_latent_types='legacy', raw_reconstruction_heads=False)
     training = TrainConfig(steps=2, batch_size=1, crop_lengths=[10], threads=1)
     dataset = SyntheticDataset(2, 12, 17)
     train(old_cfg, training, dataset, tmp_path/'r', stop_after=1)
@@ -297,7 +297,8 @@ def test_checkpoint_from_before_new_architecture_options_still_loads(tiny_cfg, t
     reference.load_state_dict(payload['model'])
     payload['model_config'] = {k: v for k, v in payload['model_config'].items()
                                if k not in ('pair_frame_features', 'sc_local_frame', 'sc_shape_features',
-                                            'global_latent_types', 'encoder_global_transport')}
+                                            'global_latent_types', 'encoder_global_transport',
+                                            'global_readout', 'raw_reconstruction_heads')}
     payload['format_version'] = 5
     torch.save(payload, path)
     stored = load_checkpoint(path)

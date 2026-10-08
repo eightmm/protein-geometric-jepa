@@ -162,7 +162,13 @@ def _rms(x: Tensor, dims: tuple[int, ...], dof: int) -> Tensor:
     """Per-token RMS per magnetic component (3 for l=1, 5 for l=2)."""
     if x.shape[1] == 0:
         return x.new_zeros(len(x), 1)
-    return (x.square().sum(dims)/dof).mean(-1, keepdim=True).sqrt()
+    return safe_sqrt((x.square().sum(dims)/dof).mean(-1, keepdim=True))
+
+
+def safe_sqrt(m: Tensor) -> Tensor:
+    """sqrt with a zero (not NaN) gradient at 0: zero rows are common (missing
+    geometry), and targets carry gradient in the teacher-free baseline."""
+    return torch.where(m > 0, m.clamp_min(1e-30).sqrt(), torch.zeros_like(m))
 
 
 def _per_token(value: Tensor, index: Tensor) -> Tensor:
@@ -235,7 +241,7 @@ def _masked_term(per: Tensor, mask: Tensor, segment: Tensor, size: int) -> tuple
 def typed_distance(pred: TypedLatent, target: TypedLatent, mask: Tensor,
                    equivariant: bool, typed: bool = True, masks: dict | None = None,
                    kinds: tuple[str, ...] = ('sem', 'eq', 'circ', 'dir', 'frame'),
-                   segment: Tensor | None = None, size: int = 1):
+                   segment: Tensor | None = None, size: int = 1, semantic: str = 'mse'):
     """Per-kind distances, each normalized to O(1) and averaged over each
     record's valid tokens; kinds that rotate with the world (eq, dir, frame)
     only when the context provides a frame.
@@ -254,7 +260,8 @@ def typed_distance(pred: TypedLatent, target: TypedLatent, mask: Tensor,
     def add(name, value, weight=None):
         terms[name], counts[name] = segment_mean(value, seg, size, weight)
 
-    add('sem', (p.sem-t.sem).square().mean(-1))
+    add('sem', 1-F.cosine_similarity(p.sem, t.sem, dim=-1, eps=1e-6) if semantic == 'cosine'
+        else (p.sem-t.sem).square().mean(-1))
     if equivariant and 'eq' in kinds:
         if p.v.shape[1]:
             add('vector', (p.v-t.v).square().sum(-1).mean(-1)/3)

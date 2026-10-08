@@ -1,4 +1,5 @@
 """Online encoder, EMA teacher encoder and JEPA predictor. No coordinate reconstruction."""
+from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import replace
 import torch
@@ -8,10 +9,14 @@ from ..objectives.losses import fiber_distance, regularize_latents
 from ..data.batch import segment_mean
 from ..data.constants import AA3, ATOM_ID, N_ATOMS, SYMMETRIC_RENAMES
 from ..objectives.tasks import Observation
-from .encoders import MultiViewEncoder
+from .encoders import MultiViewEncoder, EncodedView
+from .fibers import Fiber
 from ..data.batch import pack, padded_layout, to_padded
 from .predictors import (CrossViewPredictor, ContextLatent, VIEW_NAMES, make_target,
                          topology_atoms, low_rms_fraction)
+from ..geometry.features import backbone_features, chi_features
+from ..objectives.losses import effective_rank
+from .latents import _masked_term
 from .latents import (TypedLatentHead, latent_spec, make_typed_target, eq_reference,
                       typed_distance, circular_floor, torus_mmd, sphere_mmd)
 
@@ -53,6 +58,28 @@ def symmetric_atom_loss(pred, target, target_residue, target_slot, residues, slo
     valid = torch.where(flipped, found_flip, found)
     average, count = segment_mean(loss[valid], segment[valid], size)
     return average+pred.s.sum()*0, count
+
+
+@torch.no_grad()
+def equivariant_diagnostics(vectors: list, tensors: list, gram_channels: int = 4) -> dict:
+    """Collapse watch for l>0 latents (spec 20.3), no loss term: per-degree
+    channel RMS, share of near-dead channels (RMS < 0.1 x mean channel RMS)
+    and the effective rank of rotation-invariant Gram contractions across
+    tokens of many proteins (rotation alone cannot inflate it)."""
+    out = {}
+    for name, xs, dof in (("l1", vectors, 3), ("l2", tensors, 5)):
+        x = torch.cat(xs)
+        if not x.shape[1] or not len(x):
+            continue
+        rms = (x.flatten(2).square().sum(-1)/dof).mean(0).sqrt()
+        out[f"{name}_rms"] = float(rms.mean())
+        out[f"{name}_dead_channels"] = float((rms <= 0.1*rms.mean()).float().mean())
+    v = torch.cat(vectors)[:, :gram_channels]
+    if v.shape[1] >= 2 and len(v) >= 2:
+        upper = torch.triu_indices(v.shape[1], v.shape[1], device=v.device)
+        gram = torch.einsum('nci,ndi->ncd', v, v)[:, upper[0], upper[1]]
+        out["l1_gram_rank"] = effective_rank(gram)
+    return out
 
 
 @torch.no_grad()
@@ -190,11 +217,16 @@ class ProteinJEPA(nn.Module):
                 return type(z)(*(torch.zeros_like(x) for x in z.tensors()))
             context = {name: replace(z, nodes=blank(z.nodes), global_state=blank(z.global_state))
                        for name, z in context.items()}
-        with torch.no_grad():
-            target = self.teacher.encoder(batch, (spec.target,))[spec.target]
-            head = self.teacher.heads[spec.target]
+        # EMA teacher under stop-gradient, or (teacher-free baseline) the online
+        # stack itself with gradient flowing into the targets.
+        teacher_free = train_cfg.target_encoder == "online"
+        stack = self.online if teacher_free else self.teacher
+        targets_grad = nullcontext() if teacher_free else torch.no_grad()
+        with targets_grad:
+            target = stack.encoder(batch, (spec.target,))[spec.target]
+            head = stack.heads[spec.target]
             target_nodes_raw = head(target.nodes)
-            target_global_raw = head(target.global_state, self.teacher.global_only)
+            target_global_raw = head(target.global_state, stack.global_only)
         # Mask tokens sit at the OBSERVATION's target residues and atom tokens
         # follow the visible-sequence topology; teacher validity/presence only
         # filters the loss, so hidden atom presence never shapes any query.
@@ -203,11 +235,12 @@ class ProteinJEPA(nn.Module):
         if spec.atom_loss and target.atoms is not None:
             atom_residues, atom_slots = topology_atoms(
                 batch.seq, seq_visible, query, observations[0].task_name == "sc_infill")
+        raw = train_cfg.raw_angle_weight > 0 or train_cfg.raw_coordinate_weight > 0
         prediction = self.predictor(context, batch.seq_pos, spec.target, query,
-                                    atom_residues, atom_slots, owner, size)
+                                    atom_residues, atom_slots, owner, size, raw)
         floor = train_cfg.target_floor
         every = torch.arange(size, device=owner.device)
-        with torch.no_grad():
+        with targets_grad:
             node_target, kind_masks = make_typed_target(target_nodes_raw, target.node_valid, floor,
                                                         batch=owner, size=size)
             node_target = node_target.index(query)
@@ -217,9 +250,10 @@ class ProteinJEPA(nn.Module):
                 reference=eq_reference(target_nodes_raw, target.node_valid, owner, size),
                 batch=every, size=size)
         node_valid = target.node_valid[query]
+        semantic = train_cfg.semantic_distance
         node_loss, terms = typed_distance(prediction.nodes, node_target, node_valid,
                                           spec.equivariant, typed, kind_masks, segment=owner[query],
-                                          size=size)
+                                          size=size, semantic=semantic)
         observed = torch.zeros(size, dtype=torch.bool, device=owner.device)
         for latent in context.values():
             observed |= latent.global_valid
@@ -227,37 +261,49 @@ class ProteinJEPA(nn.Module):
         # Global latents stay invariant semantic + irreps; never circles/frames.
         global_loss, _ = typed_distance(prediction.global_state, global_target,
                                         target.global_valid & observed, spec.equivariant, typed,
-                                        kinds=('sem', 'eq'), segment=every, size=size)
+                                        kinds=('sem', 'eq'), segment=every, size=size,
+                                        semantic=semantic)
         atom_loss = node_loss*0
         atom_count = torch.zeros_like(node_loss)
         if atom_residues is not None and len(atom_residues) and len(target.atom_residue):
             # Topology queries meet observed teacher atoms by (residue, slot), up
             # to the residue's symmetric renaming.
-            with torch.no_grad():
+            with targets_grad:
                 atom_target = make_target(target.atoms, None, floor, instance=True,
                                           batch=owner[target.atom_residue], size=size)
             atom_loss, atom_count = symmetric_atom_loss(prediction.atoms, atom_target, target.atom_residue,
                                             target.atom_slot, atom_residues, atom_slots, batch.seq,
                                             owner[atom_residues], size)
-        loss = node_loss + train_cfg.global_weight*global_loss + train_cfg.atom_weight*atom_loss
+        raw_angle = raw_coordinate = node_loss.detach()*0
+        if raw:
+            raw_angle, raw_coordinate = self._raw_losses(batch, prediction, query, atom_visible,
+                                                         spec.equivariant, train_cfg)
+        loss = (train_cfg.node_weight*node_loss + train_cfg.global_weight*global_loss
+                + train_cfg.atom_weight*atom_loss + train_cfg.raw_angle_weight*raw_angle
+                + train_cfg.raw_coordinate_weight*raw_coordinate)
         top1, retrieved = node_retrieval(prediction.nodes.sem, node_target.sem, node_valid,
                                          owner[query], size)
         low = low_rms_fraction(target.nodes, target.node_valid, floor, owner, size)
         # Online context latents BEFORE target normalization: layer-normed
         # scalars sum to zero, which would make a covariance penalty fight the norm.
         regularizer_inputs = [{} for _ in range(size)]
-        for name, z in context.items():
-            counts = torch.bincount(owner[z.index], minlength=size).tolist()
-            for b, (sem, circ) in enumerate(zip(z.nodes.sem.split(counts), z.nodes.circ.split(counts))):
-                if len(sem):
-                    regularizer_inputs[b][name] = (sem, circ)
+        latents = [(name, z.nodes, owner[z.index]) for name, z in context.items()]
+        if teacher_free:
+            # Targets carry gradient here, so their latents are regularized too.
+            valid = torch.where(target.node_valid)[0]
+            latents.append((f"{spec.target}_target", target_nodes_raw.index(valid), owner[valid]))
+        for name, z, records_of in latents:
+            counts = torch.bincount(records_of, minlength=size).tolist()
+            for b, parts in enumerate(zip(*(x.split(counts) for x in (z.sem, z.circ, z.v, z.t)))):
+                if len(parts[0]):
+                    regularizer_inputs[b][name] = parts
         # One device->host transfer for every per-record diagnostic.
         counts = terms.pop('counts')
         terms.pop('valid_targets')
         names = list(terms)
         table = torch.stack([terms[k].detach() for k in names]+[counts[k] for k in names]+[
             node_loss.detach(), global_loss.detach(), atom_loss.detach(), top1, retrieved.float(),
-            low, atom_count]).T.tolist()
+            low, atom_count, raw_angle.detach(), raw_coordinate.detach()]).T.tolist()
         results = []
         k = len(names)
         for b, row in enumerate(table):
@@ -265,13 +311,41 @@ class ProteinJEPA(nn.Module):
                     "valid_targets_by_kind": {name: int(row[k+i]) for i, name in enumerate(names)}}
             if info["valid_targets"]:
                 info.update({name: row[i] for i, name in enumerate(names) if row[k+i] > 0})
-            node, glob, atom, hit, n, low_b, atoms_b = row[2*k:]
+            node, glob, atom, hit, n, low_b, atoms_b, angle_b, coordinate_b = row[2*k:]
             info.update(target_low_rms=low_b, task=observations[b].task_name, node_loss=node,
                         global_loss=glob, atom_loss=atom, valid_atom_targets=int(atoms_b))
+            if raw:
+                info.update(raw_angle_loss=angle_b, raw_coordinate_loss=coordinate_b)
             if n >= 2:
                 info.update(node_top1=hit, node_chance=1/n)
             results.append((loss[b], info, regularizer_inputs[b]))
         return results
+
+    def _raw_losses(self, batch, prediction, query, atom_visible, equivariant, train_cfg):
+        """Raw-geometry baseline per record: 1 - cos over valid torsions of the
+        query residues, and the CA offset from the visible-CA centroid (Angstrom/10;
+        equivariant contexts only). Targets come from the full crop."""
+        owner, size = batch.batch, batch.size
+        zero = (prediction.raw_angles.sum()+prediction.raw_coordinate.sum())*0
+        angle = coordinate = zero.expand(size)
+        if train_cfg.raw_angle_weight > 0:
+            with torch.no_grad():
+                bb, chi = backbone_features(batch), chi_features(batch)
+                angles = torch.cat((bb.periodic, chi.encoded), 1)[query]
+                valid = torch.cat((bb.periodic_valid, chi.valid), 1)[query]
+            per = 1-(prediction.raw_angles*angles).sum(-1)
+            angle = angle+_masked_term(per, valid, owner[query], size)[0]
+        if train_cfg.raw_coordinate_weight > 0 and equivariant:
+            # Unobserved coordinates may hold any value (even NaN): mask first.
+            present = batch.present[:, 1]
+            ca = torch.where(present[:, None], batch.xyz[:, 1].float(), 0.)
+            centroid, count = segment_mean(ca, owner, size, atom_visible[:, 1] & present)
+            ok = present[query] & (count[owner[query]] > 0)
+            chosen = query[ok]
+            target = (ca[chosen]-centroid[owner[chosen]])/10
+            error = (prediction.raw_coordinate[ok]-target).square().sum(-1)/3
+            coordinate = coordinate+segment_mean(error, owner[chosen], size)[0]
+        return angle, coordinate
 
     def forward(self, records_and_observations, train_cfg: TrainConfig):
         by_task, logs, groups = {}, [], {}
@@ -292,6 +366,7 @@ class ProteinJEPA(nn.Module):
             sems = [z[0] for z in latents]
             circs = [z[1] for z in latents]
             var, cov, info = regularize_latents(sems)
+            info.update(equivariant_diagnostics([z[2] for z in latents], [z[3] for z in latents]))
             reg = train_cfg.variance_weight*var + train_cfg.covariance_weight*cov
             if train_cfg.semantic_regularizer == "sphere_mmd":
                 # Directional uniformity on top of (not instead of) the scale floor.
@@ -324,6 +399,75 @@ class ProteinJEPA(nn.Module):
         result = self.online.encoder(record, mapping[mode])
         self.train(was_training)
         return result
+
+    # Downstream entry points (spec 25); the teacher is not used at inference.
+    def encode_sequence(self, record_or_sequence):
+        """Sequence-only: residue states and the sequence CLS (no structure input)."""
+        if isinstance(record_or_sequence, str):
+            from ..data.synthetic import sequence_record
+            device = self.predictor.mask_embedding.device
+            record_or_sequence = sequence_record(record_or_sequence).to(device)
+        return self.encode(record_or_sequence, "sequence")["seq"]
+
+    def encode_backbone(self, record):
+        """Backbone atoms, residues and global irreps; the SC/AA paths never run."""
+        return self.encode(record, "backbone")["bb"]
+
+    def encode_all_atom(self, record):
+        """All-atom atom states, residue states and global irreps."""
+        return self.encode(record, "all_atom")["aa"]
+
+    def encode_multimodal(self, record):
+        """Every modality's own outputs (no joint fusion token)."""
+        return self.encode(record, "multimodal")
+
+    @torch.no_grad()
+    def encode_windows(self, record, mode="backbone", window=256, stride=128):
+        """Overlapping-window inference for proteins longer than the training crops.
+
+        Node and atom states are averaged over the windows that contain them,
+        weighted towards each window's centre (edge residues lack context and
+        carry crop-boundary invalidity). All windows share the world frame, so
+        averaging l=1/l=2 states stays equivariant. Global states are NOT
+        averaged: each view's `global_state` holds one state per window, since
+        a mean of crop globals is not a full-protein global (spec 25).
+        Returns ({view: EncodedView over the whole record}, window starts).
+        """
+        if window < 1 or not 1 <= stride <= window:
+            raise ValueError("Need window >= 1 and 1 <= stride <= window so every residue is covered.")
+        n = len(record)
+        starts = [0] if n <= window else list(range(0, n-window+1, stride))
+        if starts[-1]+window < n:
+            starts.append(n-window)
+        crops = [record.crop(start, window) for start in starts]
+        packed = pack(crops)
+        local = torch.arange(len(packed), device=packed.batch.device)-packed.ptr[packed.batch]
+        lengths = (packed.ptr[1:]-packed.ptr[:-1])[packed.batch]
+        position = torch.tensor(starts, device=local.device)[packed.batch]+local
+        centre = (1+torch.minimum(local, lengths-1-local)).float()
+        out = {}
+        for name, view in self.encode(crops, mode).items():
+            weight = centre*view.node_valid
+            nodes, total = self._window_mean(view.nodes, position, weight, n)
+            atoms = residue = slot = None
+            if view.atoms is not None:
+                key = position[view.atom_residue]*N_ATOMS+view.atom_slot
+                keys, inverse = torch.unique(key, return_inverse=True)
+                atoms, _ = self._window_mean(view.atoms, inverse, centre[view.atom_residue], len(keys))
+                residue, slot = keys//N_ATOMS, keys % N_ATOMS
+            out[name] = EncodedView(nodes, total > 0, view.global_state, view.global_valid,
+                                    atoms, residue, slot)
+        return out, starts
+
+    @staticmethod
+    def _window_mean(h, index, weight, size):
+        total = weight.new_zeros(size).index_add_(0, index, weight)
+        parts = []
+        for x in (h.s, h.v, h.t):
+            w = weight.reshape((-1,)+(1,)*(x.ndim-1))
+            summed = x.new_zeros((size, *x.shape[1:])).index_add_(0, index, x*w)
+            parts.append(summed/total.clamp_min(1e-12).reshape((-1,)+(1,)*(x.ndim-1)))
+        return Fiber(*parts), total
 
     @torch.no_grad()
     def latents(self, record, mode="sequence") -> dict[str, ContextLatent]:

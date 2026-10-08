@@ -16,6 +16,7 @@ from .models.jepa import ProteinJEPA
 from .objectives.tasks import make_observation
 from .objectives.losses import effective_rank
 from .train import ema_momentum
+from .optim import build_optimizer, SchedulerSet
 from .data.records import random_crop
 from .geometry.primitives import random_rotation
 
@@ -41,22 +42,28 @@ def evaluate_pairs(model: ProteinJEPA, pairs, train_cfg: TrainConfig) -> dict:
     was_training = model.training
     model.eval()
     by_task, top1, chance, scalars = defaultdict(list), defaultdict(list), defaultdict(list), []
+    by_view = defaultdict(list)
     for (_, observation), (loss, info, inputs) in zip(pairs, model.sample_losses(pairs, train_cfg, 16)):
         by_task[observation.task_name].append(float(loss))
         if 'node_top1' in info:
             top1[observation.task_name].append(info['node_top1'])
             chance[observation.task_name].append(info['node_chance'])
-        scalars += [sem for sem, _ in inputs.values()]
+        scalars += [z[0] for z in inputs.values()]
+        for name, z in inputs.items():
+            by_view[name].append(z[0])
     model.train(was_training)
     tasks = {t: {'loss': sum(v)/len(v),
                  'node_top1': sum(top1[t])/len(top1[t]) if top1[t] else None,
                  'chance': sum(chance[t])/len(chance[t]) if chance[t] else None}
              for t, v in by_task.items()}
+    # Pooled rank mixes views of different scale (one large view dominates);
+    # the per-view ranks show which view, if any, actually collapsed.
     rank = effective_rank(torch.cat(scalars)) if scalars else 0.0
+    view_rank = {name: effective_rank(torch.cat(v)) for name, v in sorted(by_view.items())}
     return {'loss': sum(x['loss'] for x in tasks.values())/len(tasks),
             'node_top1': _mean([x['node_top1'] for x in tasks.values()]),
             'chance': _mean([x['chance'] for x in tasks.values()]),
-            'effective_rank': rank, 'tasks': tasks}
+            'effective_rank': rank, 'view_effective_rank': view_rank, 'tasks': tasks}
 
 
 def _mean(values):
@@ -107,8 +114,7 @@ def overfit(model_cfg: ModelConfig, train_cfg: TrainConfig, records, steps: int,
     pairs = fixed_observations(records, train_cfg, seed, crop=stochastic)
     sampler = torch.Generator().manual_seed(seed+1)
     model = ProteinJEPA(model_cfg).to(device).train()
-    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],
-                                  lr=learning_rate, weight_decay=0.0)
+    optimizer = build_optimizer(model, train_cfg, torch.device(device), learning_rate, weight_decay=0.0)
     schedule = TrainConfig(**{**train_cfg.__dict__, 'steps': steps})
     warmup = max(1, min(500, steps//20))
 
@@ -118,7 +124,7 @@ def overfit(model_cfg: ModelConfig, train_cfg: TrainConfig, records, steps: int,
         if step < warmup:
             return (step+1)/warmup
         return 0.1+0.9*0.5*(1+math.cos(math.pi*min((step-warmup)/max(steps-warmup, 1), 1)))
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_factor)
+    scheduler = SchedulerSet(optimizer, lr_factor)
     history, start = [], time.perf_counter()
     best_top1, best_loss, stale, converged = -1.0, math.inf, 0, None
     for step in range(steps+1):
@@ -149,7 +155,8 @@ def overfit(model_cfg: ModelConfig, train_cfg: TrainConfig, records, steps: int,
         torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.grad_clip)
         optimizer.step()
         scheduler.step()
-        model.update_teacher(ema_momentum(schedule, step))
+        if train_cfg.target_encoder == "ema":
+            model.update_teacher(ema_momentum(schedule, step))
     first, last = history[0], history[-1]
     return {'records': len(records), 'pairs': len(pairs), 'steps': steps,
             'converged_at_step': converged, 'patience': patience, 'lr_schedule': lr_schedule,

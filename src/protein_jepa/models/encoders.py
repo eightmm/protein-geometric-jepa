@@ -225,7 +225,7 @@ class BackboneEncoder(nn.Module):
             GlobalTransport(cfg.dims, cfg.encoder_global_transport)
             for _ in self.layers if cfg.encoder_global_transport != 'none')
         self.atom_feedback = FiberLinear(cfg.dims, cfg.dims)
-        self.readout = GlobalReadout(cfg.dims)
+        self.readout = GlobalReadout(cfg.dims, learned=cfg.global_readout != 'mean')
 
     def forward(self, record, visible, backbone=None):
         feat = backbone_features(record, visible) if backbone is None else backbone
@@ -250,7 +250,7 @@ class SidechainEncoder(nn.Module):
         self.stem = AtomStem(cfg, backbone_only=False)
         self.shape_map = (FiberLinear(FiberDims(4, 1, 1), cfg.dims, scalar_bias=False)
                           if cfg.sc_shape_features else None)
-        self.readout = GlobalReadout(cfg.dims)
+        self.readout = GlobalReadout(cfg.dims, learned=cfg.global_readout != 'mean')
         self.global_transport = (GlobalTransport(cfg.dims, cfg.encoder_global_transport)
                                  if cfg.encoder_global_transport != 'none' else None)
 
@@ -282,7 +282,7 @@ class AllAtomFusion(nn.Module):
         self.global_transport = (GlobalTransport(cfg.dims, cfg.encoder_global_transport)
                                  if cfg.encoder_global_transport != 'none' else None)
         self.feedback = FiberLinear(cfg.dims, cfg.dims)
-        self.readout = GlobalReadout(cfg.dims)
+        self.readout = GlobalReadout(cfg.dims, learned=cfg.global_readout != 'mean')
 
     def forward(self, record, visible, bb: EncodedView, sc: EncodedView, backbone=None):
         # No writes to bb/sc tensors: the clean BB output survives fusion unchanged.

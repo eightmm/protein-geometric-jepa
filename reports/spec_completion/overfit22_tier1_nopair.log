@@ -1,0 +1,12 @@
+{"step": 0, "seconds": 3e-06, "lr": 0.001, "loss": 3.139156, "node_top1": 0.020225, "chance": 0.016345, "effective_rank": 34.219212}
+{"step": 300, "seconds": 300.447665, "lr": 0.001, "loss": 1.841843, "node_top1": 0.020654, "chance": 0.016345, "effective_rank": 4.169471}
+{"step": 600, "seconds": 677.10639, "lr": 0.001, "loss": 1.709211, "node_top1": 0.025173, "chance": 0.016345, "effective_rank": 2.61722}
+{"step": 900, "seconds": 1083.305164, "lr": 0.001, "loss": 1.676009, "node_top1": 0.03323, "chance": 0.016345, "effective_rank": 2.462275}
+{"step": 1200, "seconds": 1486.249519, "lr": 0.001, "loss": 1.493831, "node_top1": 0.05423, "chance": 0.016345, "effective_rank": 2.332209}
+{"step": 1500, "seconds": 1923.825808, "lr": 0.001, "loss": 1.383139, "node_top1": 0.076752, "chance": 0.016345, "effective_rank": 2.468718}
+{"step": 1800, "seconds": 2300.956246, "lr": 0.001, "loss": 1.316221, "node_top1": 0.089364, "chance": 0.016345, "effective_rank": 2.15405}
+{"step": 2100, "seconds": 2727.665651, "lr": 0.001, "loss": 1.26728, "node_top1": 0.105102, "chance": 0.016345, "effective_rank": 2.234626}
+{"step": 2400, "seconds": 3093.100963, "lr": 0.001, "loss": 1.233527, "node_top1": 0.124283, "chance": 0.016345, "effective_rank": 2.05954}
+{"step": 2700, "seconds": 3461.933485, "lr": 0.001, "loss": 1.205206, "node_top1": 0.143545, "chance": 0.016345, "effective_rank": 2.051714}
+{"step": 3000, "seconds": 3904.097782, "lr": 0.001, "loss": 1.171968, "node_top1": 0.155285, "chance": 0.016345, "effective_rank": 2.024816}
+{"records": 22, "pairs": 198, "steps": 3000, "converged_at_step": null, "loss_ratio": 0.37333863795826144}

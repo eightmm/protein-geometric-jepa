@@ -368,7 +368,7 @@ Sample index별 task 배정은 rank와 무관하다. 따라서 같은 step에서
 
 Checkpoint는 online/teacher/predictor, optimizer, scheduler, global step, rank별 torch CPU/CUDA RNG(dropout용; sample은 step 번호로 재현된다), configuration, manifest fingerprint와 world size를 저장한다. Atomic replace와 weights_only load를 사용한다.
 
-현재 format은 6이다. Format 3/4/5는 저장 당시 architecture 기본값으로 inference에 읽을 수 있지만 format 6 학습으로 exact resume하지 않는다. Global 계약이나 transport mode가 다른 실행도 resume에서 거부한다.
+현재 format은 7이다(6: global 계약·transport, 7: optimizer/scheduler 상태 목록). Format 3/4/5/6은 저장 당시 architecture 기본값으로 inference에 읽을 수 있지만 현재 format 학습으로 exact resume하지 않는다. Global 계약이나 transport mode가 다른 실행도 resume에서 거부한다.
 
 Resume는 같은 world size, model/backend, task schedule, 학습 계획 및 dataset manifest에서 지원한다. 실행을 일찍 끊으려면 총 steps를 바꾸지 말고 `--stop-after`를 사용한다.
 

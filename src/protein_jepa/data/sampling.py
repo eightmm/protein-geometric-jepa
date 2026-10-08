@@ -6,7 +6,8 @@ the CPU; the training loop moves them to the device.
 """
 from dataclasses import replace
 import hashlib
-import multiprocessing
+import signal
+import threading
 import torch
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 from .records import random_crop
@@ -59,6 +60,12 @@ def _identity(item):
 
 def _worker_init(_):
     torch.set_num_threads(1)  # many workers x many threads oversubscribes the host
+    # Launchers (torchrun, Slurm) signal the whole process group. Workers ignore
+    # stop signals so the trainer can finish its step and save; they exit when
+    # the trainer closes the loader (or dies: DataLoader workers watch it).
+    for name in ("SIGTERM", "SIGUSR1"):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), signal.SIG_IGN)
 
 
 def step_loader(dataset, cfg, rank: int, first: int, end: int):
@@ -67,15 +74,24 @@ def step_loader(dataset, cfg, rank: int, first: int, end: int):
     stream = StepStream(dataset, cfg, rank, first, end)
     if cfg.loader_workers == 0:
         return iter(stream)
-    # forkserver/spawn: fork after CUDA/NCCL initialization can deadlock (see the
-    # DistributedDataParallel docs). A script that calls train() with workers
-    # therefore needs an `if __name__ == "__main__":` guard (the CLI has one).
-    # The private generator keeps the global (dropout) RNG untouched, so resume stays exact.
-    context = "forkserver" if "forkserver" in multiprocessing.get_all_start_methods() else "spawn"
-    return iter(DataLoader(stream, batch_size=None, num_workers=cfg.loader_workers,
-                           collate_fn=_identity, worker_init_fn=_worker_init, prefetch_factor=2,
-                           multiprocessing_context=context,
-                           generator=torch.Generator().manual_seed(cfg.seed+rank)))
+    # spawn: fork after CUDA/NCCL initialization can deadlock (DistributedDataParallel
+    # docs), and spawn workers are direct children of the trainer (a forkserver
+    # process would die on a launcher's group-wide SIGTERM and take the workers'
+    # liveness pipes with it). A script that calls train() with workers needs an
+    # `if __name__ == "__main__":` guard (the CLI has one). Stop signals are
+    # ignored while workers start, so they inherit SIG_IGN before worker_init.
+    # The private generator keeps the global (dropout) RNG untouched.
+    stops = [getattr(signal, n) for n in ("SIGTERM", "SIGUSR1") if hasattr(signal, n)]
+    main = threading.current_thread() is threading.main_thread()
+    previous = {s: signal.signal(s, signal.SIG_IGN) for s in stops} if main else {}
+    try:
+        return iter(DataLoader(stream, batch_size=None, num_workers=cfg.loader_workers,
+                               collate_fn=_identity, worker_init_fn=_worker_init, prefetch_factor=2,
+                               multiprocessing_context="spawn",
+                               generator=torch.Generator().manual_seed(cfg.seed+rank)))
+    finally:
+        for s, handler in previous.items():
+            signal.signal(s, handler)
 
 
 def to_device(record, observation, device):

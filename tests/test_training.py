@@ -135,7 +135,8 @@ def test_overfit_fits_residue_specific_targets(tiny_cfg):
     cfg=replace(tiny_cfg,interaction='effdock',effdock_radial_hidden=24)
     tc=TrainConfig(tasks=['seq_to_bb','bb_infill'],ema=.999,ema_end=1.,mask_min_span=2,
                    variance_weight=0.,covariance_weight=0.,circular_weight=0.)
-    result=overfit(cfg,tc,[synthetic_record(20,1)],120,5e-3,120,'cpu',0,log=lambda *_:None)
+    # 200 steps: at 120 the margin depended on the exact initialization draw.
+    result=overfit(cfg,tc,[synthetic_record(20,1)],200,5e-3,200,'cpu',0,log=lambda *_:None)
     last=result['history'][-1]
     assert result['loss_ratio']<.5
     assert last['node_top1']>2*last['chance']
@@ -191,8 +192,9 @@ def test_packed_group_equals_separate_samples(model,task,transport):
             else:
                 assert info[key]==value,key
         assert inputs.keys()==ref_inputs.keys()
-        for name,(sem,circ) in ref_inputs.items():
-            torch.testing.assert_close(inputs[name][0],sem,atol=2e-5,rtol=2e-5)
+        for name,ref in ref_inputs.items():
+            for got,want in zip(inputs[name],ref):
+                torch.testing.assert_close(got,want,atol=2e-5,rtol=2e-5)
 
 
 def test_group_without_valid_targets_matches_single(model,protein):
@@ -216,13 +218,16 @@ def test_retrieval_of_a_record_ignores_other_records():
     assert float(packed[1])==float(alone[0])
 
 
-def test_resume_is_exact_with_workers_and_accumulation(tiny_cfg,tmp_path):
+@pytest.mark.parametrize('optimizer',['adamw',pytest.param('muon',marks=pytest.mark.skipif(
+    not hasattr(torch.optim,'Muon'),reason='needs torch.optim.Muon'))])
+def test_resume_is_exact_with_workers_and_accumulation(tiny_cfg,tmp_path,optimizer):
     """Samples depend only on the step: a run split by stop/resume and built
-    by background workers equals one in-process run, with accumulation on."""
+    by background workers equals one in-process run, with accumulation on
+    (and with the Muon + AdamW optimizer set)."""
     import json
     cfg=replace(tiny_cfg,dropout=.1)   # dropout RNG must survive worker start-up
     base=TrainConfig(steps=4,batch_size=2,accumulation_steps=2,crop_lengths=[10,12],
-                     log_every=1,save_every=2,threads=1,mask_min_span=2)
+                     log_every=1,save_every=2,threads=1,mask_min_span=2,optimizer=optimizer)
     dataset=SyntheticDataset(4,14,33)
     tiny_cfg=cfg
     train(tiny_cfg,base,dataset,tmp_path/'full')
@@ -321,3 +326,218 @@ def test_context_removal_control_ignores_sequence_content_but_retains_observatio
     model.train()
     with pytest.raises(ValueError,match='evaluation-only'):
         model.sample_losses([(protein,obs)],TrainConfig(),context_control='position_mask_only')
+
+
+def test_teacher_free_routes_gradient_through_targets(model,protein):
+    """target_encoder=online: targets come from the online stack with gradient
+    (a target-only view still trains), the EMA teacher is untouched, and the
+    target latents are regularized."""
+    model.train()
+    cfg=TrainConfig(target_encoder='online')
+    obs=make_observation(protein,'sc_to_chi',.3,torch.Generator().manual_seed(2))
+    loss,details=model([(protein,obs)],cfg)
+    assert torch.isfinite(loss)
+    loss.backward()
+    chi=model.online.encoder.chi
+    assert any(p.grad is not None and bool(p.grad.abs().sum()) for p in chi.parameters())
+    assert all(p.grad is None for p in model.teacher.parameters())
+    assert 'chi_target' in details['regularization']
+    # Geometric and atom targets: zero-RMS rows must not make gradients NaN,
+    # and atom targets carry gradient like the node targets.
+    for task in ('chi_to_sc','aa_infill'):
+        model.zero_grad(set_to_none=True)
+        obs=make_observation(protein,task,.3,torch.Generator().manual_seed(2),min_span=2)
+        loss,_,_=model.task_loss(protein,obs,replace(cfg,node_weight=float(task!='aa_infill'),
+                                                     global_weight=0.))
+        loss.backward()
+        grads=[p.grad for p in model.online.parameters() if p.grad is not None]
+        assert grads and all(torch.isfinite(g).all() for g in grads),task
+    import protein_jepa.models.jepa as jepa
+    seen=[]
+    original=jepa.make_target
+    def spy(*a,**k):
+        out=original(*a,**k); seen.append(out.s.requires_grad); return out
+    jepa.make_target=spy
+    try:
+        obs=make_observation(protein,'aa_infill',.3,torch.Generator().manual_seed(2),min_span=2)
+        model.task_loss(protein,obs,cfg)
+    finally:
+        jepa.make_target=original
+    assert seen==[True]
+
+
+def test_semantic_cosine_and_mean_readout_options(tiny_cfg,protein):
+    from protein_jepa.models.jepa import ProteinJEPA
+    from protein_jepa.models.fibers import GlobalReadout, Fiber
+    obs=make_observation(protein,'bb_infill',.3,torch.Generator().manual_seed(2),min_span=2)
+    model=ProteinJEPA(replace(tiny_cfg,global_readout='mean')).eval()
+    with torch.no_grad():
+        mse,_,_=model.task_loss(protein,obs,TrainConfig())
+        cos,_,_=model.task_loss(protein,obs,TrainConfig(semantic_distance='cosine'))
+    assert torch.isfinite(cos) and float(cos)!=float(mse)
+    readout=GlobalReadout(tiny_cfg.dims,learned=False)
+    h=Fiber(torch.randn(5,16),torch.randn(5,4,3),torch.randn(5,2,3,3))
+    valid=torch.ones(5,dtype=torch.bool)
+    out=readout(h,valid)
+    mean=Fiber(h.s.mean(0,keepdim=True)+readout.scalar_query,h.v.mean(0,keepdim=True),
+               h.t.mean(0,keepdim=True))
+    torch.testing.assert_close(out.s,readout.mix(mean).s)   # uniform weights
+    assert readout.score is None
+
+
+def test_raw_reconstruction_baseline_is_equivariant_and_trains(model,protein):
+    """Raw torsion/CA-offset losses: finite, train their heads, and the loss is
+    invariant to a rigid motion of the record (the CA offset rotates with it)."""
+    from protein_jepa.geometry.primitives import random_rotation
+    cfg=TrainConfig(node_weight=0.,global_weight=0.,atom_weight=0.,raw_angle_weight=1.,
+                    raw_coordinate_weight=1.)
+    obs=make_observation(protein,'bb_infill',.3,torch.Generator().manual_seed(2),min_span=2)
+    loss,info,_=model.task_loss(protein,obs,cfg)
+    assert info['raw_angle_loss']>0 and info['raw_coordinate_loss']>0
+    loss.backward()
+    assert bool(model.predictor.raw_angle_head.weight.grad.abs().sum())
+    assert bool(model.predictor.raw_coordinate_head.linear.weight.grad.abs().sum())
+    r=random_rotation(torch.Generator().manual_seed(9))
+    moved=protein.rigid_transform(r,torch.tensor([2.,-4.,1.]))
+    with torch.no_grad():
+        a,_,_=model.task_loss(protein,obs,cfg)
+        b,_,_=model.task_loss(moved,obs,cfg)
+    torch.testing.assert_close(a,b,atol=2e-5,rtol=2e-5)
+
+
+def test_equivariant_collapse_diagnostics_are_logged(model,protein):
+    obs=make_observation(protein,'bb_infill',.3,torch.Generator().manual_seed(2),min_span=2)
+    _,details=model([(protein,obs)],TrainConfig())
+    reg=details['regularization']['bb']
+    assert {'l1_rms','l2_rms','l1_dead_channels','l1_gram_rank'}<=reg.keys()
+
+
+def test_window_inference_rejects_gaps_and_diagnostics_flag_full_collapse(model):
+    from protein_jepa.data.synthetic import synthetic_record
+    from protein_jepa.models.jepa import equivariant_diagnostics
+    with pytest.raises(ValueError,match='covered'):
+        model.encode_windows(synthetic_record(37,5),'backbone',window=8,stride=12)
+    zero=equivariant_diagnostics([torch.zeros(6,4,3)],[torch.zeros(6,2,3,3)])
+    assert zero['l1_dead_channels']==1.0 and zero['l2_dead_channels']==1.0
+
+
+def test_raw_reconstruction_ignores_unobserved_coordinates(model,protein):
+    """Unobserved coordinates may hold NaN; raw losses (and an angle-only
+    setup) must stay finite."""
+    xyz=protein.xyz.clone(); present=protein.present.clone()
+    present[3,1]=False; xyz[3,1]=float('nan')
+    broken=replace(protein,xyz=xyz,present=present)
+    obs=make_observation(broken,'bb_infill',.3,torch.Generator().manual_seed(2),min_span=2)
+    for weights in ((1.,1.),(1.,0.)):
+        cfg=TrainConfig(node_weight=0.,global_weight=0.,atom_weight=0.,raw_angle_weight=weights[0],
+                        raw_coordinate_weight=weights[1])
+        model.zero_grad(set_to_none=True)
+        loss,_,_=model.task_loss(broken,obs,cfg)
+        assert torch.isfinite(loss)
+        loss.backward()
+        assert all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
+
+
+def test_muon_takes_hidden_matrices_and_adamw_the_rest(tiny_cfg):
+    from protein_jepa.models.jepa import ProteinJEPA
+    from protein_jepa.optim import parameter_groups
+    model=ProteinJEPA(replace(tiny_cfg,interaction='effdock',effdock_radial_hidden=24))
+    muon,decay,no_decay=parameter_groups(model,True,True)
+    names={id(p):n for n,p in model.named_parameters()}
+    embeddings={id(m.weight) for m in model.modules() if isinstance(m,torch.nn.Embedding)}
+    assert muon and all(p.ndim==2 and min(p.shape)>=2 for p in muon)
+    assert not any('.heads.' in names[id(p)] or '_head' in names[id(p)] or id(p) in embeddings
+                   or names[id(p)].endswith(('attention.bias','tp.weight','seed.v','seed.t'))
+                   for p in muon)
+    assert all(p.ndim<2 or id(p) in embeddings or names[id(p)].endswith('attention.bias')
+               for p in no_decay)
+    trainable={id(p) for p in model.parameters() if p.requires_grad}
+    assert {id(p) for p in muon+decay+no_decay}==trainable and len(muon+decay+no_decay)==len(trainable)
+    _,all_decay,none=parameter_groups(model,False,False)
+    assert not none and len(all_decay)==len(trainable)
+
+
+def test_auto_resume_keep_checkpoints_and_init_from(tiny_cfg,tmp_path):
+    from protein_jepa.checkpoint import load_checkpoint as load
+    training=TrainConfig(steps=4,batch_size=1,crop_lengths=[10],threads=1,save_every=1,
+                         keep_checkpoints=2,mask_min_span=2)
+    dataset=SyntheticDataset(3,12,5)
+    assert train(tiny_cfg,training,dataset,tmp_path/'r',resume='auto',stop_after=2)['steps']==2
+    assert train(tiny_cfg,training,dataset,tmp_path/'r',resume='auto')['steps']==4
+    assert sorted(p.name for p in (tmp_path/'r').glob('step_*.pt'))==['step_00000003.pt','step_00000004.pt']
+    train(tiny_cfg,training,dataset,tmp_path/'full')
+    a,b=load(tmp_path/'full'/'last.pt'),load(tmp_path/'r'/'last.pt')
+    assert all(torch.equal(a['model'][k],b['model'][k]) for k in a['model'])
+    fresh=train(tiny_cfg,replace(training,steps=1),dataset,tmp_path/'init',init_from=tmp_path/'r'/'last.pt')
+    assert fresh['steps']==1 and load(tmp_path/'init'/'last.pt')['step']==1
+    with pytest.raises(ValueError,match='different model'):
+        train(replace(tiny_cfg,scalar=8,heads=4),training,dataset,tmp_path/'bad',
+              init_from=tmp_path/'r'/'last.pt')
+
+
+def test_stop_signal_saves_and_resumes_exactly(tiny_cfg,tmp_path):
+    """SIGTERM mid-run: the step finishes, a checkpoint is written, the run
+    reports interrupted, and resuming reproduces the uninterrupted run."""
+    import os, signal
+    from protein_jepa.checkpoint import load_checkpoint as load
+    training=TrainConfig(steps=5,batch_size=1,crop_lengths=[10],threads=1,save_every=10,
+                         mask_min_span=2)
+    class SignalOnce(SyntheticDataset):
+        calls=0
+        def __getitem__(self,i):
+            SignalOnce.calls+=1
+            if SignalOnce.calls==2:      # during step 1
+                os.kill(os.getpid(),signal.SIGTERM)
+            return super().__getitem__(i)
+    stopped=train(tiny_cfg,training,SignalOnce(3,12,5),tmp_path/'r')
+    assert stopped['interrupted'] and stopped['steps']==2 and load(tmp_path/'r'/'last.pt')['step']==2
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL or callable(signal.getsignal(signal.SIGTERM))
+    dataset=SyntheticDataset(3,12,5)
+    train(tiny_cfg,training,dataset,tmp_path/'r',resume=tmp_path/'r'/'last.pt')
+    train(tiny_cfg,training,dataset,tmp_path/'full')
+    a,b=load(tmp_path/'full'/'last.pt'),load(tmp_path/'r'/'last.pt')
+    assert all(torch.equal(a['model'][k],b['model'][k]) for k in a['model'])
+
+
+def test_group_stop_signal_with_loader_workers(tmp_path):
+    """A launcher signals the whole process group (trainer + loader workers):
+    workers must survive so the trainer saves, then resume is exact."""
+    import subprocess, sys, textwrap
+    from pathlib import Path
+    script=tmp_path/'run.py'
+    script.write_text(textwrap.dedent('''
+        import os, signal, sys, json, torch
+        from dataclasses import replace
+        from protein_jepa.config import ModelConfig, TrainConfig
+        from protein_jepa.data.dataset import SyntheticDataset
+        from protein_jepa.train import train
+        class GroupSignal(SyntheticDataset):
+            def __getitem__(self, i):
+                marker = sys.argv[2]+'.sent'
+                if sys.argv[3] == 'signal' and not os.path.exists(marker):
+                    open(marker, 'w').close()
+                    os.killpg(os.getpgid(0), signal.SIGTERM)   # like torchrun/Slurm
+                return super().__getitem__(i)
+        if __name__ == '__main__':
+            cfg = ModelConfig(scalar=16, vector=4, tensor=2, sequence_width=32, sequence_layers=1,
+                              atom_layers=1, backbone_layers=1, aa_layers=1, internal_layers=1,
+                              predictor_layers=2, latent_scalar=16, latent_vector=4,
+                              latent_tensor=2, circular_channels=4)
+            tc = TrainConfig(steps=6, batch_size=1, crop_lengths=[10], threads=1, save_every=10,
+                             mask_min_span=2, loader_workers=1)
+            data = GroupSignal(3, 12, 5)
+            result = train(cfg, tc, data, sys.argv[1], resume='auto')
+            print(json.dumps({'interrupted': result['interrupted'], 'steps': result['steps']}))
+    '''))
+    env={**__import__('os').environ,'PYTHONPATH':str(Path(__file__).resolve().parents[1]/'src')}
+    def run(out,mode):
+        done=subprocess.run([sys.executable,str(script),str(out),str(tmp_path/out.name),mode],
+                            capture_output=True,text=True,env=env,start_new_session=True,timeout=600)
+        assert done.returncode==0,done.stderr[-2000:]
+        return __import__('json').loads(done.stdout.strip().splitlines()[-1])
+    first=run(tmp_path/'r','signal')
+    assert first['interrupted'] and first['steps']<6
+    assert run(tmp_path/'r','signal')['steps']==6        # auto-resume; marker prevents a second signal
+    run(tmp_path/'full','none')
+    a,b=load_checkpoint(tmp_path/'full'/'last.pt'),load_checkpoint(tmp_path/'r'/'last.pt')
+    assert all(torch.equal(a['model'][k],b['model'][k]) for k in a['model'])

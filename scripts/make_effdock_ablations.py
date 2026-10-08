@@ -27,7 +27,7 @@ def main():
         'no_distance_decay': {'interaction': 'effdock', 'effdock_distance_decay': False},
         'no_smooth_cutoff': {'interaction': 'effdock', 'effdock_smooth_cutoff': False},
         'depth6': {'interaction': 'effdock', 'backbone_layers': 6},
-        # v0.3 opt-in encoder experiments, one at a time and all together.
+        # Opt-in encoder experiments, one at a time and all together.
         'bilinear_ffn': {'interaction': 'effdock', 'effdock_ffn': 'bilinear'},
         'directional_gates': {'interaction': 'effdock', 'effdock_directional': True},
         'adaptive_cutoff': {'interaction': 'effdock', 'effdock_adaptive_cutoff': True},
@@ -35,9 +35,9 @@ def main():
         'all_extensions': {'interaction': 'effdock', 'effdock_ffn': 'bilinear',
                            'effdock_directional': True, 'effdock_adaptive_cutoff': True,
                            'sc_context': 'spatial'},
-        # v0.3 JEPA objective/predictor axes.
+        # JEPA objective/predictor axes.
         'predictor_depth1': {'interaction': 'effdock', 'predictor_layers': 1},
-        # v0.4 typed latents: the all-Euclidean baseline and the S^2/SO(3) heads.
+        # Typed latents: the all-Euclidean baseline and the S^2/SO(3) heads.
         'euclidean_latents': {'interaction': 'effdock', 'latent_typing': 'euclidean'},
         'direction_frame_heads': {'interaction': 'effdock', 'direction_channels': 4,
                                   'frame_channels': 2},
@@ -45,6 +45,10 @@ def main():
         'global_mean': {'encoder_global_transport': 'mean'},
         'global_learned': {'encoder_global_transport': 'learned'},
         'no_sc_shape': {'sc_shape_features': False},
+        # Spec-level geometry inputs and the global slot (spec 6.3, 7.1, 13.3).
+        'no_pair_frames': {'interaction': 'effdock', 'pair_frame_features': False},
+        'sc_local_frame': {'interaction': 'effdock', 'sc_local_frame': True},
+        'mean_readout': {'interaction': 'effdock', 'global_readout': 'mean'},
     }
     training_changes = {
         'single_span_mask': {'mask_blocks': 1},
@@ -52,6 +56,20 @@ def main():
         'no_covariance': {'covariance_weight': 0.0},
         'torus_mmd': {'circular_regularizer': 'torus_mmd'},
         'sphere_mmd': {'semantic_regularizer': 'sphere_mmd'},
+        # The comparisons the design spec requires (spec 27).
+        'teacher_free': {'target_encoder': 'online'},
+        'cosine_semantic': {'semantic_distance': 'cosine'},
+        'raw_reconstruction': {'node_weight': 0.0, 'global_weight': 0.0, 'atom_weight': 0.0,
+                               'raw_angle_weight': 1.0, 'raw_coordinate_weight': 1.0},
+        'node_only': {'global_weight': 0.0},
+        'seq_only': {'tasks': ['seq_infill']},
+        'seq_bb_only': {'tasks': ['seq_to_bb', 'bb_to_seq']},
+        'bb_only': {'tasks': ['bb_infill', 'cart_to_internal', 'internal_to_bb']},
+        'representation_tasks': {'tasks': ['seq_to_bb', 'bb_to_seq', 'cart_to_internal',
+                                           'internal_to_bb', 'sc_to_chi', 'chi_to_sc']},
+        'infilling_tasks': {'tasks': ['bb_infill', 'sc_infill', 'aa_infill']},
+        'crop_128': {'crop_lengths': [128]},
+        'crop_256': {'crop_lengths': [256]},
     }
     files = {}
     variants = [(name, update, {}) for name, update in changes.items()]

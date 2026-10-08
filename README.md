@@ -20,7 +20,7 @@
 - **Loss**: type마다 거리를 따로 씁니다. sem은 MSE, irreps는 Frobenius, 원과 방향은 1 − cos, frame은 chordal 거리입니다.
 - **Collapse 방지**: sem에는 variance floor를 걸고, 원에는 channel별 floor를 겁니다. arXiv:2609.21656의 heat-kernel MMD(`torus_mmd`, `sphere_mmd`)는 ablation 옵션입니다.
 - **실행 검증**: 단백질 22개로 실제 학습과 같은 방식의 확률적 overfit(random crop, 매번 새 mask, task 혼합, EMA)을 돌렸습니다. loss는 37%까지 떨어졌고, retrieval은 우연 수준의 6.8배이며 계속 상승 중이었습니다. 이때 covariance 항이 rank 붕괴를 막습니다. 실제 CuEq CUDA 경로도 Blackwell GPU에서 통과했습니다. 테스트는 CPU에서 189 passed / 2 CUDA skips, GPU에서 CuEq·학습 경로 24 passed입니다(`reports/typed_latent/pytest_*.txt`).
-- **비교 기준**: `latent_typing: euclidean`이 all-Euclidean baseline입니다. 근거와 실험 결과는 [TYPED_LATENT_KO.md](docs/TYPED_LATENT_KO.md)에 있습니다. checkpoint는 format 6입니다. Format 3/4/5는 당시 설정의 legacy inference로 읽지만 새 학습으로 resume하지 않습니다. Format 1·2는 읽지 않습니다.
+- **비교 기준**: `latent_typing: euclidean`이 all-Euclidean baseline입니다. 근거와 실험 결과는 [TYPED_LATENT_KO.md](docs/TYPED_LATENT_KO.md)에 있습니다. checkpoint는 format 7입니다. format 3·4·5·6의 weight는 당시 설정으로 추론용으로 읽지만 이어 학습은 하지 않습니다. format 1·2는 읽지 않습니다.
 
 ## Global 표현과 평가 진단
 
@@ -296,12 +296,13 @@ python scripts/make_effdock_ablations.py --base configs/effdock_cueq_gpu.yaml \
   --output runs/ablation-configs --seeds 17 29 43
 ```
 
-두 번째 명령은 27개 variant(interaction 10개, encoder·predictor 실험 6개, typed latent 2개, masking·EMA·covariance·heat-kernel MMD 5개, global 계약·transport 대조군 3개, SC shape 대조군 1개) × 3개 seed의 완전한 설정을 생성하며 **학습/job 제출을 시작하지 않습니다.** Equal-step/equal-compute 및 parameter-matched 비교를 구분하세요. 작은 smoke loss로 품질 순위를 판단하지 않습니다.
+두 번째 명령은 41개 variant × 3개 seed의 완전한 설정을 생성합니다. 구성은 interaction 10개, encoder·predictor 실험 6개, typed latent 2개, 기하 입력·global readout 3개, global 계약·transport 대조군 3개, SC shape 대조군 1개, masking·EMA·covariance·heat-kernel MMD 5개, 그리고 설계 명세 27절의 비교 11개(teacher-free, cosine, raw reconstruction, node-only, seq-only, task 부분집합, crop 크기)입니다. 이 명령은 **학습/job 제출을 시작하지 않습니다.** Equal-step/equal-compute 및 parameter-matched 비교를 구분하세요. 작은 smoke loss로 품질 순위를 판단하지 않습니다.
 
 ## 문서
 
 | 문서 | 내용 |
 |---|---|
+| [SPEC_COMPLIANCE_KO.md](docs/SPEC_COMPLIANCE_KO.md) | 설계 명세의 절마다 구현 위치·확인 테스트·보류 항목 |
 | [TYPED_LATENT_KO.md](docs/TYPED_LATENT_KO.md) | typed latent 계약·구현·council 기록·22개 단백질 overfit 결과 |
 | [JEPA_TARGETS_KO.md](docs/JEPA_TARGETS_KO.md) | target·predictor 결함 수정, target·predictor 정의, council 기록, 검증 범위 |
 | [EFFDOCK_UPGRADE_KO.md](docs/EFFDOCK_UPGRADE_KO.md) | 원본 EFF-Dock 비교, 수식, 강화 tradeoff, 후속 분석 |
