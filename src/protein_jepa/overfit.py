@@ -86,15 +86,22 @@ def sample_batch(records, train_cfg: TrainConfig, step: int, batch_size: int,
 
 def overfit(model_cfg: ModelConfig, train_cfg: TrainConfig, records, steps: int,
             learning_rate: float = 1e-3, eval_every: int = 50, device: str = 'cpu',
-            seed: int = 0, log=print, stochastic: bool = False, batch_size: int = 4) -> dict:
+            seed: int = 0, log=print, stochastic: bool = False, batch_size: int = 4,
+            patience: int = 0, lr_schedule: str = 'constant') -> dict:
     """AdamW on a tiny set; returns the evaluation history.
 
     Fixed mode trains on the fixed evaluation pairs (full batch). Stochastic
     mode trains exactly like `train` (random crops/masks/tasks, EMA schedule)
     and evaluates on fixed crops+masks of the same records.
+
+    patience > 0 stops once `patience` consecutive evaluations improve neither
+    retrieval (by > 0.002) nor loss (by > 0.5%): the run has converged.
+    lr_schedule='cosine' warms up, then decays to 10% like `train`.
     """
-    if steps < 1 or eval_every < 1:
-        raise ValueError('steps and eval_every must be positive.')
+    if steps < 1 or eval_every < 1 or patience < 0:
+        raise ValueError('steps and eval_every must be positive; patience nonnegative.')
+    if lr_schedule not in {'constant', 'cosine'}:
+        raise ValueError(f'Unknown lr_schedule {lr_schedule!r}.')
     torch.manual_seed(seed)
     torch.set_num_threads(train_cfg.threads)  # concurrent runs otherwise oversubscribe CPUs
     records = [r.to(device) for r in records]
@@ -104,14 +111,34 @@ def overfit(model_cfg: ModelConfig, train_cfg: TrainConfig, records, steps: int,
     optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],
                                   lr=learning_rate, weight_decay=0.0)
     schedule = TrainConfig(**{**train_cfg.__dict__, 'steps': steps})
+    warmup = max(1, min(500, steps//20))
+
+    def lr_factor(step):
+        if lr_schedule == 'constant':
+            return 1.0
+        if step < warmup:
+            return (step+1)/warmup
+        return 0.1+0.9*0.5*(1+math.cos(math.pi*min((step-warmup)/max(steps-warmup, 1), 1)))
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_factor)
     history, start = [], time.perf_counter()
+    best_top1, best_loss, stale, converged = -1.0, math.inf, 0, None
     for step in range(steps+1):
         if step % eval_every == 0 or step == steps:
             row = {'step': step, 'seconds': time.perf_counter()-start,
+                   'lr': optimizer.param_groups[0]['lr'],
                    **evaluate_pairs(model, pairs, train_cfg)}
             history.append(row)
-            log(json.dumps({k: (round(v, 4) if isinstance(v, float) else v)
+            log(json.dumps({k: (round(v, 6) if isinstance(v, float) else v)
                             for k, v in row.items() if k != 'tasks'}))
+            top1 = row['node_top1'] or 0.0
+            if top1 > best_top1+0.002 or row['loss'] < best_loss*(1-0.005):
+                stale = 0
+            elif step:
+                stale += 1
+            best_top1, best_loss = max(best_top1, top1), min(best_loss, row['loss'])
+            if patience and stale >= patience:
+                converged = step
+                break
         if step == steps:
             break
         batch = sample_batch(records, train_cfg, step, batch_size, sampler) if stochastic else pairs
@@ -122,9 +149,11 @@ def overfit(model_cfg: ModelConfig, train_cfg: TrainConfig, records, steps: int,
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.grad_clip)
         optimizer.step()
+        scheduler.step()
         model.update_teacher(ema_momentum(schedule, step))
     first, last = history[0], history[-1]
     return {'records': len(records), 'pairs': len(pairs), 'steps': steps,
+            'converged_at_step': converged, 'patience': patience, 'lr_schedule': lr_schedule,
             'mode': 'stochastic' if stochastic else 'fixed', 'batch_size': batch_size,
             'device': str(device), 'backend': model_cfg.backend,
             'interaction': model_cfg.interaction,

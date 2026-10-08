@@ -56,6 +56,9 @@ def main(argv=None):
     fit.add_argument('--stochastic', action='store_true',
                      help='train like `train` (random crops/masks/tasks); evaluate on fixed ones')
     fit.add_argument('--batch-size', type=int, default=4)
+    fit.add_argument('--patience', type=int, default=0,
+                     help='stop after this many evaluations without improvement (0 = off)')
+    fit.add_argument('--lr-schedule', choices=['constant', 'cosine'], default='constant')
     encode = commands.add_parser('encode')
     encode.add_argument('--checkpoint', required=True)
     group = encode.add_mutually_exclusive_group(required=True)
@@ -105,9 +108,11 @@ def main(argv=None):
                        for p in args.records]
         result = overfit(cfg, training, records, args.steps, args.lr, args.eval_every,
                          args.device, args.seed, stochastic=args.stochastic,
-                         batch_size=args.batch_size)
+                         batch_size=args.batch_size, patience=args.patience,
+                         lr_schedule=args.lr_schedule)
         write(result, args.output)
-        print(json.dumps({k: result[k] for k in ('records', 'pairs', 'steps', 'loss_ratio')}))
+        print(json.dumps({k: result[k] for k in ('records', 'pairs', 'steps', 'converged_at_step',
+                                                 'loss_ratio')}))
     elif args.command == 'audit-manifest':
         dataset = ManifestDataset(args.manifest)
         print(json.dumps({'train_records': len(dataset), 'fingerprint': dataset.fingerprint,

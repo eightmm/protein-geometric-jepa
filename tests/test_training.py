@@ -148,3 +148,13 @@ def test_stochastic_overfit_uses_training_sampling(tiny_cfg):
     assert len({obs.task_name for _,obs in batch})==4 and all(len(r)<=14 for r,_ in batch)
     result=overfit(tiny_cfg,tc,records,2,1e-3,2,'cpu',0,log=lambda *_:None,stochastic=True,batch_size=2)
     assert result['mode']=='stochastic' and result['pairs']==27 and len(result['history'])==2
+
+
+def test_overfit_patience_stops_a_plateaued_run(tiny_cfg):
+    """With lr 0 nothing improves: the run must stop after `patience` evals."""
+    from protein_jepa.data.synthetic import synthetic_record
+    from protein_jepa.overfit import overfit
+    tc=TrainConfig(tasks=['seq_to_bb'],mask_min_span=2)
+    result=overfit(tiny_cfg,tc,[synthetic_record(16,1)],50,0.0,2,'cpu',0,log=lambda *_:None,
+                   patience=2,lr_schedule='cosine')
+    assert result['converged_at_step']==4 and result['history'][-1]['step']==4
