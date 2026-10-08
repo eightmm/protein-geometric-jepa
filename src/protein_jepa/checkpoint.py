@@ -10,8 +10,10 @@ import torch
 #     defaults) for inference but do not resume.
 # 6 = explicit global latent contract and optional encoder global transport.
 # 7 = optimizer/scheduler states are lists (AdamW, plus Muon when enabled).
-FORMAT_VERSION = 7
-READABLE = (3, 4, 5, 6, 7)
+# 8 = 6 and 7 merged; mean readout holds no score network, so a format-7
+#     optimizer state no longer matches (weights still load for inference).
+FORMAT_VERSION = 8
+READABLE = (3, 4, 5, 6, 7, 8)
 
 
 def rng_state():

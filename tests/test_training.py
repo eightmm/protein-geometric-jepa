@@ -551,6 +551,21 @@ def test_mean_readout_loads_states_with_an_unused_score_network(tiny_cfg):
     torch.testing.assert_close(mean.scalar_query,learned.scalar_query)
 
 
+def test_format7_checkpoint_loads_weights_but_refuses_resume(tiny_cfg,tmp_path):
+    """Format 7 (pre-merge) optimizer states no longer match the merged layout."""
+    from protein_jepa.models.jepa import ProteinJEPA
+    from protein_jepa.config import model_config
+    training=TrainConfig(steps=2,batch_size=1,crop_lengths=[10],threads=1,mask_min_span=2)
+    dataset=SyntheticDataset(2,12,5)
+    train(tiny_cfg,training,dataset,tmp_path/'r',stop_after=1)
+    path=tmp_path/'r'/'last.pt'
+    payload=load_checkpoint(path); payload['format_version']=7; torch.save(payload,path)
+    stored=load_checkpoint(path)
+    ProteinJEPA(model_config(stored['model_config'])).load_state_dict(stored['model'])
+    with pytest.raises(ValueError,match='cannot resume'):
+        train(tiny_cfg,training,dataset,tmp_path/'r',resume=path)
+
+
 def test_evaluation_counts_raw_only_supervision(model,protein):
     """A record whose latent targets are all missing but whose raw targets
     exist still contributes to the raw-baseline summary."""

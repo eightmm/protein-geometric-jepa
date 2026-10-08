@@ -81,7 +81,7 @@ MANIFEST=/abs/manifest.jsonl OUTDIR=/abs/runs/jepa CONFIG=configs/effdock_cueq_g
 - `--init-from ckpt`: weight만 불러와 step 0부터 새 optimizer로 학습한다. 모델 설정이 같아야 한다.
 - **중단 신호:** SIGTERM이나 SIGUSR1을 받으면 현재 optimizer step을 마치고 `last.pt`를 저장한 뒤 `interrupted: true`로 끝낸다. CLI는 exit code 3을 돌려준다. 여러 rank 중 하나만 신호를 받아도 모든 rank가 같은 step에서 멈춘다. DataLoader worker는 이 신호를 무시하므로, launcher가 process group 전체에 신호를 보내도 학습 프로세스가 step을 마치고 저장할 수 있다. CPU에서는 이어 학습한 결과가 끊김 없이 돌린 것과 bit 단위로 같다(`test_stop_signal_saves_and_resumes_exactly`, `test_group_stop_signal_with_loader_workers`). CUDA에서는 atomic 연산의 비결정성 때문에 1e-5 수준의 차이가 날 수 있다.
 - Slurm 스크립트는 종료 5분 전 SIGTERM을 받도록 설정되어 있고, 중단된 경우 스스로 requeue한 뒤 `--resume auto`로 이어 간다. torchrun은 SIGTERM을 worker에 전달하고 일정 시간 뒤 강제 종료하므로, step 하나가 그 시간 안에 끝나야 한다. **실제 Slurm 환경에서는 실행해 보지 않았다.**
-- Resume에서는 `optimizer`, `muon_momentum`, `decay_exclusions`를 바꿀 수 없다. checkpoint format 7부터 optimizer와 scheduler 상태를 목록으로 저장한다.
+- Resume에서는 `optimizer`, `muon_momentum`, `decay_exclusions`를 바꿀 수 없다. checkpoint format 7부터 optimizer와 scheduler 상태를 목록으로 저장한다(현재 format 8).
 
 목적함수 비교용 옵션(설계 명세 18.3, 19.2, 19.6, 27절)은 기본값이 현재 방식이다.
 
@@ -93,7 +93,7 @@ MANIFEST=/abs/manifest.jsonl OUTDIR=/abs/runs/jepa CONFIG=configs/effdock_cueq_g
 | `raw_angle_weight` / `raw_coordinate_weight` | 0 / 0 | raw 기하 재구성 baseline: 질의 residue의 torsion(1−cos)과 visible Cα 중심 기준 Cα 변위(Å/10, 좌표가 있는 context만) |
 | `tasks` | 9개 | 선택형 `seq_infill`(서열만의 JEPA)을 더해 sequence-only baseline을 만든다 |
 
-- **Sample은 (seed, rank, step, sample 번호)의 순수 함수다.** sampler 상태를 checkpoint에 두지 않으므로 resume은 step 번호만으로 정확히 이어지고, worker 수가 달라도 같은 sample이 나온다(`test_resume_is_exact_with_workers_and_accumulation`, `test_step_loader_workers_match_in_process`). 현재 checkpoint는 format 7이다. format 3·4·5·6 weight는 당시 설정으로 추론용으로 읽지만 그 학습을 resume하지는 않는다.
+- **Sample은 (seed, rank, step, sample 번호)의 순수 함수다.** sampler 상태를 checkpoint에 두지 않으므로 resume은 step 번호만으로 정확히 이어지고, worker 수가 달라도 같은 sample이 나온다(`test_resume_is_exact_with_workers_and_accumulation`, `test_step_loader_workers_match_in_process`). 현재 checkpoint는 format 8이다. format 3–7 weight는 당시 설정으로 추론용으로 읽지만 그 학습을 resume하지는 않는다.
 - **Batch:** microbatch 안에서 같은 task의 sample들은 하나의 disjoint-union batch로 계산한다. graph edge는 record 안에만 생기고, Transformer와 predictor attention은 record별 padding으로 서로를 보지 않으며, loss와 진단값은 record별로 계산한다. 결과는 sample을 하나씩 계산한 것과 같다(`test_packed_group_equals_separate_samples`). task가 9개이므로 task당 여러 sample이 모이도록 batch를 수십 단위로 잡아야 처리량이 오른다([측정](../reports/batching/README.md)).
 - **Accumulation:** metrics의 `samples`에는 모든 microbatch의 sample이 들어가고, `regularization`은 microbatch별 목록이 된다. task별 loss 평균은 microbatch 안에서 하므로, `batch_size=B, accumulation_steps=K`는 `batch_size=B×K` 한 번과 수치가 정확히 같지는 않다. 유효 batch는 `world × K × B`이고 learning rate는 자동으로 조정하지 않는다.
 - **정밀도:** float32 전용이다. TF32는 속도 이득이 없었고 loss의 회전 불변 오차를 3e-7에서 6e-4로 키웠다. bf16 autocast는 지원하지 않는다([측정](../reports/training_env/README.md)).
@@ -126,7 +126,7 @@ protein-jepa audit-manifest data/manifest.jsonl --content
 protein-jepa audit-manifest data/manifest.jsonl --min-identity 0.8 --max-pairs 10000
 ```
 
-새 학습은 checkpoint format 7과 `global_latent_types: sem_eq`를 쓴다. Format 3/4/5/6은 legacy inference로 읽고 학습 resume은 거부한다. `encoder_global_transport: mean|learned`는 opt-in이며 기본은 `none`이다. `sc_shape_features`는 새 설정에서 기본 true이며 이전 저장 설정에서 키가 없으면 false로 복원한다. 같은 format의 checkpoint도 shape 옵션이 다른 모델로 resume하면 거부한다. Ablation writer는 global legacy/mean/learned 및 `no_sc_shape` 대조군을 포함한 41개 variant를 만들며 학습은 시작하지 않는다.
+새 학습은 checkpoint format 8과 `global_latent_types: sem_eq`를 쓴다. Format 3–7은 legacy inference로 읽고 학습 resume은 거부한다. `encoder_global_transport: mean|learned`는 opt-in이며 기본은 `none`이다. `sc_shape_features`는 새 설정에서 기본 true이며 이전 저장 설정에서 키가 없으면 false로 복원한다. 같은 format의 checkpoint도 shape 옵션이 다른 모델로 resume하면 거부한다. Ablation writer는 global legacy/mean/learned 및 `no_sc_shape` 대조군을 포함한 41개 variant를 만들며 학습은 시작하지 않는다.
 
 Feature 계산의 CPU 측정은 `PYTHONPATH=src python scripts/benchmark_geometry.py --output /tmp/geometry-benchmark.json`으로 실행할 수 있다. `--no-sc-shape`로 shape 입력 비용을 분리한다. Synthetic 128/256 residue, 작은 reference 모델, CPU 한 thread의 timing이며 GPU throughput이나 학습 품질 측정이 아니다. 구현·검증 범위는 [SC shape 보고서](../reports/sc_shape/README.md)에 있다.
 
