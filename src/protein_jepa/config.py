@@ -225,9 +225,15 @@ def _checked(cls, data):
     return cls(**data)
 
 
+# Architecture options added after checkpoints already existed: a stored
+# config that omits one was built without it, so it loads with this value
+# (fresh YAML configs get the dataclass defaults instead).
+LEGACY_MODEL_DEFAULTS = {"pair_frame_features": False, "sc_local_frame": False}
+
+
 def model_config(data: dict) -> ModelConfig:
     """Checked ModelConfig from a stored dict (removed/unknown keys explained)."""
-    return _checked(ModelConfig, data)
+    return _checked(ModelConfig, {**LEGACY_MODEL_DEFAULTS, **data})
 
 
 def train_config(data: dict) -> TrainConfig:

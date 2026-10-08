@@ -18,7 +18,7 @@ from .models.jepa import ProteinJEPA
 from .config import model_config, train_config
 from .data.sampling import step_loader, to_device
 from .objectives.tasks import TASKS
-from .checkpoint import save_checkpoint, load_checkpoint, rng_state, restore_rng
+from .checkpoint import FORMAT_VERSION, save_checkpoint, load_checkpoint, rng_state, restore_rng
 
 
 def ema_momentum(train_cfg, step):
@@ -86,11 +86,12 @@ def train(model_cfg, train_cfg, dataset, output, resume=None, stop_after=None):
     payload = None
     if resume:
         payload = load_checkpoint(resume)
+        if payload['format_version'] != FORMAT_VERSION:
+            raise ValueError(f"Checkpoint format {payload['format_version']} predates the current "
+                             "sampling/objective; it loads for inference but training cannot "
+                             "resume from it exactly. Start a new run.")
         if asdict(model_config(payload['model_config'])) != asdict(model_cfg):
             raise ValueError("Resume model configuration differs (including backend).")
-        if payload['format_version'] != 4:
-            raise ValueError("Checkpoint format 3 drew samples from a stateful sampler; "
-                             "training cannot resume from it exactly. Start a new run.")
         if payload['fingerprint'] != dataset.fingerprint or payload['world_size'] != world:
             raise ValueError("Resume requires the same dataset manifest and world size.")
         # Where/how the run executes, not what it optimizes.

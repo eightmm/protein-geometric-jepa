@@ -6,8 +6,10 @@ import torch
 
 # 3 = typed latent heads (EMA with encoders) read by the predictor.
 # 4 = same weights; samples are a pure function of the step (no sampler state).
-FORMAT_VERSION = 4
-READABLE = (3, 4)
+# 5 = rename-invariant atom loss; older formats load (legacy architecture
+#     defaults) for inference but do not resume.
+FORMAT_VERSION = 5
+READABLE = (3, 4, 5)
 
 
 def rng_state():
