@@ -1,6 +1,6 @@
-# JEPA v0.3: target·predictor 결함 수정과 opt-in encoder 실험
+# JEPA target·predictor 결함 수정과 opt-in encoder 실험
 
-> **v0.4에서 바뀐 결정**: v0.3은 학습되지 않던 projector를 고치지 않고 아예 제거했습니다. 이 때문에 원래 합의한 typed latent(learned circle 포함)가 사라졌습니다. v0.4는 head를 encoder 뒤로 옮겨, 학습되는 typed head로 복원했습니다. covariance 기본값도 다시 켰습니다. 자세한 내용은 [TYPED_LATENT_V040_KO.md](TYPED_LATENT_V040_KO.md)를 보십시오.
+> **v0.4에서 바뀐 결정**: v0.3은 학습되지 않던 projector를 고치지 않고 아예 제거했습니다. 이 때문에 원래 합의한 typed latent(learned circle 포함)가 사라졌습니다. v0.4는 head를 encoder 뒤로 옮겨, 학습되는 typed head로 복원했습니다. covariance 기본값도 다시 켰습니다. 자세한 내용은 [TYPED_LATENT_KO.md](TYPED_LATENT_KO.md)를 보십시오.
 
 v0.3은 v0.2를 실행해 확인한 개념 결함을 고치는 릴리스입니다. JEPA의 기본 계약도 다시 맞췄습니다. 그 계약은 다음 셋입니다.
 
@@ -125,7 +125,7 @@ Blackwell GPU(RTX PRO 6000, compute capability 12.0)에서 다음 조합을 썼�
 
 ## 7. 검증 증거
 
-증거는 [`reports/v030/`](../reports/v030/)에 있습니다. CPU에서 PyTorch 2.14.1을 썼고, CuEq 0.9.0은 CPU에서만 실행했습니다.
+증거는 [`reports/targets/`](../reports/targets/)에 있습니다. CPU에서 PyTorch 2.14.1을 썼고, CuEq 0.9.0은 CPU에서만 실행했습니다.
 
 - 전체 pytest: **171 passed, 2 skipped**. Skip 2개는 CUDA GPU가 필요한 테스트입니다. 실제 CuEq CPU 테스트 8개는 실행되었습니다(`-m 'not cuda'`: 8 passed).
 - Smoke demo 18 step 4종이 완료되었습니다. 대상은 baseline reference, effdock reference, baseline CuEq-naive, effdock CuEq-naive입니다.

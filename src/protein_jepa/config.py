@@ -148,7 +148,7 @@ class TrainConfig:
     variance_weight: float = 0.05
     # On raw (un-normalized) online context semantic latents. Covariance is ON:
     # without it a 22-protein stochastic overfit collapsed to effective rank ~3
-    # with lower loss but worse retrieval (docs/TYPED_LATENT_V040_KO.md).
+    # with lower loss but worse retrieval (docs/TYPED_LATENT_KO.md).
     covariance_weight: float = 0.04
     # Learned circles: per-channel floor relu(min - (1-|E z|^2)).
     circular_weight: float = 0.05

@@ -1,6 +1,6 @@
 # Protein Multi-View Geometric JEPA — 구현 명세 v0.3
 
-v0.3에서 바뀐 계약(target, predictor, masking, regularizer, AA atom 출력)은 [JEPA_V030_KO.md](JEPA_V030_KO.md)에 근거와 함께 정리했다. 아래 각 절은 v0.3 기준이다.
+v0.3에서 바뀐 계약(target, predictor, masking, regularizer, AA atom 출력)은 [JEPA_TARGETS_KO.md](JEPA_TARGETS_KO.md)에 근거와 함께 정리했다. 아래 각 절은 v0.3 기준이다.
 
 ## 0. 문서의 효력과 범위
 

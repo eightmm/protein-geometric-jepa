@@ -1,4 +1,4 @@
-# Typed latent v0.4: 원래 설계 합의의 복원
+# Typed latent: 원래 설계 합의의 복원
 
 v0.4는 원래 설계 대화에서 합의한 **typed latent**를 구현합니다. 각 기하적 성질을 그에 맞는 공간에 둡니다. v0.3에서는 학습되지 않던 projector를 고치는 대신 통째로 제거했고, 그 바람에 circular latent까지 사라졌습니다. 이것은 합의를 어긴 것이었고, v0.4가 이를 바로잡습니다.
 
@@ -67,7 +67,7 @@ Atom target에는 head를 쓰지 않습니다. 정규화한 hidden 상태를 그
 
 ### 결과 (3000 step, batch 4)
 
-같은 seed로 두 번 돌렸습니다. 두 실행은 데이터, crop, mask가 모두 같고 covariance 항만 다릅니다. 증거는 [reports/v040](../reports/v040/)에 있습니다.
+같은 seed로 두 번 돌렸습니다. 두 실행은 데이터, crop, mask가 모두 같고 covariance 항만 다릅니다. 증거는 [reports/typed_latent](../reports/typed_latent/)에 있습니다.
 
 | step | loss (cov 끔 / 켬) | retrieval (끔 / 켬), 우연 수준 0.016 | effective rank (끔 / 켬) |
 |---|---|---|---|

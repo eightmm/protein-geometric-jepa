@@ -1,6 +1,6 @@
-# Upgrade runbook (v0.2 interaction, v0.3 JEPA)
+# Upgrade runbook
 
-v0.3 changes the JEPA objective and predictor and rejects v0.2 checkpoints (format 2); configurations containing `latent_*`, `circular_channels` or `circular_weight` fail with an explicit message — delete those keys. See [JEPA_V030_KO.md](JEPA_V030_KO.md). `configs/jepa_full_cueq_gpu.yaml` enables every opt-in v0.3 encoder experiment; `scripts/validate_effdock.py --variants effdock-full` checks it.
+v0.3 changes the JEPA objective and predictor and rejects v0.2 checkpoints (format 2); configurations containing `latent_*`, `circular_channels` or `circular_weight` fail with an explicit message — delete those keys. See [JEPA_TARGETS_KO.md](JEPA_TARGETS_KO.md). `configs/jepa_full_cueq_gpu.yaml` enables every opt-in v0.3 encoder experiment; `scripts/validate_effdock.py --variants effdock-full` checks it.
 
 v0.2 added `model.interaction: effdock`. Existing configurations keep `baseline`. `backend` independently selects `reference`, `cueq-naive`, or `cueq-cuda`. The new block is wired to BB atoms, SC atoms, BB residues, AA atom fusion and AA residue fusion; sidechains and chi are retained.
 
@@ -35,7 +35,7 @@ pytest tests/test_cueq.py -m 'not cuda' -q
 protein-jepa demo --config configs/effdock_cueq_naive.yaml --output runs/effdock-cueq-cpu
 ```
 
-The import preflight is intentional: a fully skipped suite must not be mistaken for a CuEq pass. [Actual CI evidence](V020_VALIDATION.md) is available. The public dependency range does not imply that all versions in it were tested.
+The import preflight is intentional: a fully skipped suite must not be mistaken for a CuEq pass. [Actual CI evidence](INTERACTION_VALIDATION.md) is available. The public dependency range does not imply that all versions in it were tested.
 
 ## 3. CuEq GPU gate — required before large training
 
@@ -58,7 +58,7 @@ python scripts/validate_effdock.py --config configs/effdock_smoke.yaml \
 
 The validation script chooses the real GPU for `cueq-cuda`, synchronizes timing, records peak allocated GPU memory, and fails on nonfinite loss/gradient. It never substitutes the analytic reference. Start with FP32; AMP and fused-kernel compatibility require a separate validation. The CUDA tests cover end-to-end AA-infill backward, not a complete multi-GPU throughput benchmark.
 
-Verified combination on a Blackwell GPU (compute capability 12.0): `torch 2.11.0+cu128` with `cuequivariance`, `cuequivariance-torch` and `cuequivariance-ops-torch-cu12` 0.9.0. See [JEPA_V030_KO.md](JEPA_V030_KO.md) §6c.
+Verified combination on a Blackwell GPU (compute capability 12.0): `torch 2.11.0+cu128` with `cuequivariance`, `cuequivariance-torch` and `cuequivariance-ops-torch-cu12` 0.9.0. See [JEPA_TARGETS_KO.md](JEPA_TARGETS_KO.md) §6c.
 
 ### Overfit check before long runs
 

@@ -1,4 +1,4 @@
-# CuEquivariance backend contract — v0.3
+# CuEquivariance backend contract
 
 ## Architecture and execution backend are independent
 
@@ -22,7 +22,7 @@ The tensor product uses internal shared weights across edges. Different layers a
 
 ## Installation and verified environment
 
-Actual remote CI ran Python 3.11.16, PyTorch 2.14.1+cpu, CuEq core/Torch 0.9.0. The optional package range is broader for installation flexibility but only this explicitly reported CuEq version was exercised. See [V020_VALIDATION.md](V020_VALIDATION.md) for exact evidence.
+Actual remote CI ran Python 3.11.16, PyTorch 2.14.1+cpu, CuEq core/Torch 0.9.0. The optional package range is broader for installation flexibility but only this explicitly reported CuEq version was exercised. See [INTERACTION_VALIDATION.md](INTERACTION_VALIDATION.md) for exact evidence.
 
 ```bash
 python -m pip install 'cuequivariance==0.9.0' 'cuequivariance-torch==0.9.0'

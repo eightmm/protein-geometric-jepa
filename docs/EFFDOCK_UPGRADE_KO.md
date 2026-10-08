@@ -4,7 +4,7 @@
 
 `model.interaction: effdock`를 선택하면 BB atom stem, SC atom stem, BB residue trunk, AA atom fusion, AA residue fusion의 **다섯 단계가 모두 새 interaction block을 사용**한다. Sequence Transformer와 독립적인 backbone internal-coordinate/χ encoder, node/atom/global JEPA predictor, EMA teacher는 유지한다. 단순히 사용되지 않는 클래스 하나를 추가한 변경이 아니다. 연결 위치는 `models/encoders.py::interaction_block`, 구현은 `models/effdock_blocks.py`, graph schema는 `data/graphs.py`다.
 
-`backend: cueq-naive`와 `backend: cueq-cuda`는 각각 실제 NVIDIA FCTP/SH의 PyTorch naive 방식과 CUDA 방식을 선택한다. `reference`는 별도의 analytic SO(3) operator이며 실제 CuEq 실행으로 취급하지 않는다. 정확한 실행 결과는 [v0.2 검증](V020_VALIDATION.md), 실행법은 [업그레이드 실행](UPGRADE_RUNBOOK.md)을 기준으로 한다. CUDA 실측과 downstream 품질 향상은 이 릴리스의 완료 주장에 포함하지 않는다.
+`backend: cueq-naive`와 `backend: cueq-cuda`는 각각 실제 NVIDIA FCTP/SH의 PyTorch naive 방식과 CUDA 방식을 선택한다. `reference`는 별도의 analytic SO(3) operator이며 실제 CuEq 실행으로 취급하지 않는다. 정확한 실행 결과는 [v0.2 검증](INTERACTION_VALIDATION.md), 실행법은 [업그레이드 실행](UPGRADE_RUNBOOK.md)을 기준으로 한다. CUDA 실측과 downstream 품질 향상은 이 릴리스의 완료 주장에 포함하지 않는다.
 
 원본 비교 대상은 [EFF-Dock@52d413d](https://github.com/eightmm/EFF-Dock/tree/52d413dca5f5d8bcc97185a6c5f3aefb1803d5d7)다. EFF-Dock 원본 저장소나 가중치를 수정하지 않았고, 기존 JEPA v0.1 checkpoint의 기본 architecture는 `baseline`으로 유지한다.
 
@@ -100,7 +100,7 @@ Bond membership 계산은 per-edge Python set/CPU round trip에서 device-reside
 
 ## 8. 측정한 것과 측정하지 않은 것
 
-[검증 보고서](V020_VALIDATION.md)는 현재 릴리스 결과를 기록한다. `reports/v020/`는 이번 실행 증거이고, 기존 `reports/`의 v0.1 결과와 혼동하지 않는다.
+[검증 보고서](INTERACTION_VALIDATION.md)는 현재 릴리스 결과를 기록한다. `reports/interaction/`는 이번 실행 증거이고, 기존 `reports/`의 v0.1 결과와 혼동하지 않는다.
 
 작은 reference 모델에서 baseline의 trainable parameter는 75,255개, effdock variant는 117,890개였다. 이는 teacher를 제외한 수이며, production preset의 크기나 CuEq parameter count가 아니다. 동일한 node width라고 해서 동일 parameter budget은 아니다.
 
@@ -124,7 +124,7 @@ Data, canonical mapping, sequence-cluster split, crop/mask, 총 관측 residue �
 
 ## 10. 다음 강화 우선순위
 
-> v0.3 상태: P2의 directional invariant(`effdock_directional`), FFN의 degree 간 결합(`effdock_ffn: bilinear`), top-k 경계의 연속성(`effdock_adaptive_cutoff`), SC inter-residue context(`sc_context: spatial`)는 opt-in으로 구현되었고 효과는 미검증이다. Predictor/target 결함 수정은 [JEPA_V030_KO.md](JEPA_V030_KO.md)를 본다.
+> v0.3 상태: P2의 directional invariant(`effdock_directional`), FFN의 degree 간 결합(`effdock_ffn: bilinear`), top-k 경계의 연속성(`effdock_adaptive_cutoff`), SC inter-residue context(`sc_context: spatial`)는 opt-in으로 구현되었고 효과는 미검증이다. Predictor/target 결함 수정은 [JEPA_TARGETS_KO.md](JEPA_TARGETS_KO.md)를 본다.
 
 **P0 — 실제 CuEq GPU 실행 gate.** FCTP와 basis bridge의 forward/backward, 깊은 stack의 equivariance, hidden-target mutation, optimizer/EMA/resume, CUDA/NCCL 2-rank를 검사한다. FP32부터 시작한다. CPU naive 성공만으로 fused kernel이나 NCCL을 통과했다고 간주하지 않는다.
 

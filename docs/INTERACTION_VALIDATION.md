@@ -9,11 +9,11 @@ Local environment: Python 3.13, PyTorch 2.10.0+cpu, one Torch thread, no CuEq in
 
 | Check | Result | Evidence |
 |---|---|---|
-| Complete suite | **123 passed, 9 skipped** | [pytest.txt](../reports/v020/pytest.txt) |
-| Both interaction variants, 128/256 residues, nine tasks each | **36/36 finite forward/backward** | [crop_diagnostics.json](../reports/v020/crop_diagnostics.json) |
-| New variant, 18 optimizer/EMA steps, all nine tasks twice | Passed | [smoke summary](../reports/v020/smoke_summary.json), [log](../reports/v020/smoke.log) |
-| New variant, 2-process CPU/Gloo, 18 steps | Passed | [DDP summary](../reports/v020/ddp_summary.json), [log](../reports/v020/ddp.log) |
-| Ten generated ablation configurations, one seed, tiny AA-infill backward | **10/10 passed** | [ablation_smoke.json](../reports/v020/ablation_smoke.json) |
+| Complete suite | **123 passed, 9 skipped** | [pytest.txt](../reports/interaction/pytest.txt) |
+| Both interaction variants, 128/256 residues, nine tasks each | **36/36 finite forward/backward** | [crop_diagnostics.json](../reports/interaction/crop_diagnostics.json) |
+| New variant, 18 optimizer/EMA steps, all nine tasks twice | Passed | [smoke summary](../reports/interaction/smoke_summary.json), [log](../reports/interaction/smoke.log) |
+| New variant, 2-process CPU/Gloo, 18 steps | Passed | [DDP summary](../reports/interaction/ddp_summary.json), [log](../reports/interaction/ddp.log) |
+| Ten generated ablation configurations, one seed, tiny AA-infill backward | **10/10 passed** | [ablation_smoke.json](../reports/interaction/ablation_smoke.json) |
 
 The nine local skips are optional CuEq/CUDA cases, NOT passes. Existing model-fixture tests now execute for both `baseline` and `effdock`: encoder/predictor/global equivariance, clean-BB isolation, hidden-target mutation and task gradients. New tests cover eight-block stacks, zero norm derivatives, directed edge roles, cutoff-edge equivalence, dropout with shared random masks, conditional normalization, configuration errors, exact resume with dropout, and old-v0.1 config defaulting.
 
@@ -42,7 +42,7 @@ The test command reported **7 passed, 2 deselected in 9.05s**. The two deselecte
 
 The CLI completed **18 optimizer steps** across all nine tasks twice. The final AA-infill loss was `0.14437100291252136`, with gradient norm `0.3391108810901642`. The separate 32-residue diagnostic completed all nine task backward passes with finite gradients. These values document successful execution; they are not accuracy or convergence claims.
 
-The workflow artifact `cueq-naive-verification` contains `cueq.xml`, the installed-package list, the task diagnostic JSON and training summary. The run warned that optional `opt_einsum_fx` was not installed; it did not prevent naive execution. A compact, explicitly transcribed record is retained in [cueq_ci_summary.json](../reports/v020/cueq_ci_summary.json).
+The workflow artifact `cueq-naive-verification` contains `cueq.xml`, the installed-package list, the task diagnostic JSON and training summary. The run warned that optional `opt_einsum_fx` was not installed; it did not prevent naive execution. A compact, explicitly transcribed record is retained in [cueq_ci_summary.json](../reports/interaction/cueq_ci_summary.json).
 
 ## 4. Measured cost, with narrow interpretation
 

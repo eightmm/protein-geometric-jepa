@@ -4,7 +4,7 @@ from dataclasses import asdict
 import os
 import torch
 
-# 3 = v0.4 typed latent heads (EMA with encoders) read by the predictor.
+# 3 = typed latent heads (EMA with encoders) read by the predictor.
 FORMAT_VERSION = 3
 
 
@@ -46,7 +46,7 @@ def load_checkpoint(path):
     payload = torch.load(path, map_location="cpu", weights_only=True)
     version = payload.get('format_version')
     if version in (1, 2):
-        raise ValueError(f"Checkpoint format {version} predates the v0.4 typed latent heads "
+        raise ValueError(f"Checkpoint format {version} predates the typed latent heads "
                          "and predictor interface; retrain instead.")
     if version != FORMAT_VERSION:
         raise ValueError("Unsupported checkpoint format.")
