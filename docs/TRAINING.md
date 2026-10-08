@@ -68,6 +68,16 @@ MANIFEST=/abs/manifest.jsonl OUTDIR=/abs/runs/jepa CONFIG=configs/effdock_cueq_g
 | `loader_workers` | 0 | crop·mask를 미리 만드는 background process 수(forkserver/spawn). 0은 main process에서 만든다. `train()`을 직접 부르는 script는 `if __name__ == "__main__":` guard가 필요하다 |
 | `dist_backend` | auto | auto는 CUDA면 nccl, CPU면 gloo. gloo + CUDA는 GPU 하나를 여러 rank가 나눠 쓰는 시험용 |
 
+목적함수 비교용 옵션(설계 명세 18.3, 19.2, 19.6, 27절)은 기본값이 현재 방식이다.
+
+| 옵션 (`training:`) | 기본값 | 의미 |
+|---|---|---|
+| `target_encoder` | ema | `online`은 teacher-free baseline: target을 online stack이 gradient와 함께 만들고, target latent에도 regularizer를 건다 |
+| `semantic_distance` | mse | `cosine`은 semantic latent의 cosine 거리 ablation |
+| `node_weight` / `global_weight` / `atom_weight` | 1 / 0.1 / 0.2 | latent 예측 항의 가중치 |
+| `raw_angle_weight` / `raw_coordinate_weight` | 0 / 0 | raw 기하 재구성 baseline: 질의 residue의 torsion(1−cos)과 visible Cα 중심 기준 Cα 변위(Å/10, 좌표가 있는 context만) |
+| `tasks` | 9개 | 선택형 `seq_infill`(서열만의 JEPA)을 더해 sequence-only baseline을 만든다 |
+
 - **Sample은 (seed, rank, step, sample 번호)의 순수 함수다.** sampler 상태를 checkpoint에 두지 않으므로 resume은 step 번호만으로 정확히 이어지고, worker 수가 달라도 같은 sample이 나온다(`test_resume_is_exact_with_workers_and_accumulation`, `test_step_loader_workers_match_in_process`). 이 방식은 checkpoint format 4이며, format 3 checkpoint의 weight는 읽지만 그 학습을 resume하지는 않는다.
 - **Batch:** microbatch 안에서 같은 task의 sample들은 하나의 disjoint-union batch로 계산한다. graph edge는 record 안에만 생기고, Transformer와 predictor attention은 record별 padding으로 서로를 보지 않으며, loss와 진단값은 record별로 계산한다. 결과는 sample을 하나씩 계산한 것과 같다(`test_packed_group_equals_separate_samples`). task가 9개이므로 task당 여러 sample이 모이도록 batch를 수십 단위로 잡아야 처리량이 오른다([측정](../reports/batching/README.md)).
 - **Accumulation:** metrics의 `samples`에는 모든 microbatch의 sample이 들어가고, `regularization`은 microbatch별 목록이 된다. task별 loss 평균은 microbatch 안에서 하므로, `batch_size=B, accumulation_steps=K`는 `batch_size=B×K` 한 번과 수치가 정확히 같지는 않다. 유효 batch는 `world × K × B`이고 learning rate는 자동으로 조정하지 않는다.

@@ -20,15 +20,17 @@ assert chi.encoded.shape == (len(record), 4, 2)
 ## Model encoding
 
 ```python
-from protein_jepa.config import ModelConfig
+from protein_jepa.config import model_config
 from protein_jepa.models.jepa import ProteinJEPA
 from protein_jepa.checkpoint import load_checkpoint
 
 checkpoint = load_checkpoint("runs/pretrain/last.pt")
-model = ProteinJEPA(ModelConfig(**checkpoint["model_config"]))
+# model_config(): a stored config that predates an architecture option
+# rebuilds the architecture it was trained with.
+model = ProteinJEPA(model_config(checkpoint["model_config"]))
 model.load_state_dict(checkpoint["model"])
 
-features = model.encode(record, mode="all_atom")["aa"]
+features = model.encode_all_atom(record)          # = model.encode(record, "all_atom")["aa"]
 print(features.nodes.s.shape)        # [L, C0]
 print(features.nodes.v.shape)        # [L, C1, 3]
 print(features.nodes.t.shape)        # [L, C2, 3, 3], STF
@@ -40,12 +42,31 @@ print(features.global_state.s.shape) # [1, C0]
 
 Atom outputs는 residue-major라는 가정을 하지 말고 mapping으로 정렬한다. AA fusion은 BB atom list와 SC atom list를 결합하므로 atom row 순서는 canonical dense slot 순서와 다를 수 있다. 항상 `(atom_residue, atom_slot)`을 사용한다.
 
+진입점은 네 가지다(설계 명세 25절). 추론에는 teacher를 쓰지 않는다.
+
+| 함수 | 입력 | 출력 |
+|---|---|---|
+| `encode_sequence(seq 또는 record)` | 서열 | residue states, sequence CLS |
+| `encode_backbone(record)` | backbone | backbone atom/residue states, global irreps. SC/AA 경로는 실행하지 않는다 |
+| `encode_all_atom(record)` | 전체 원자 | atom/residue states, global irreps |
+| `encode_multimodal(record)` | 전부 | view별 출력 dict. 하나로 합친 joint token은 없다 |
+
+모드마다 그 view encoder의 표현이 나온다. 서열 표현과 backbone 표현은 같은 벡터 공간이 아니고, pretraining의 cross-view 예측으로만 연결된다. Typed latent(semantic, l=1/l=2, S¹, S², SO(3))가 필요하면 `model.latents(record, mode)`를 쓴다.
+
+## 긴 단백질: 겹치는 window 추론
+
+```python
+views, starts = model.encode_windows(long_record, mode="all_atom", window=256, stride=128)
+nodes = views["aa"].nodes            # 전체 길이 [L, ...], window 중앙에 가중치를 둔 평균
+globals_ = views["aa"].global_state  # window마다 하나 [W, ...]; 평균하지 않는다
+```
+
+128/256 crop으로 학습한 모델이 긴 단백질에서도 같은 성능을 낸다고 가정하지 않는다. Node와 atom 상태는 그 위치를 포함하는 window들의 평균이다. window 가장자리 residue는 문맥이 적으므로 중앙 쪽 window에 더 큰 가중치를 준다. 모든 window가 같은 world frame을 쓰므로 l=1/l=2 상태를 평균해도 등변성이 유지된다. Crop global의 평균은 전체 단백질 global이 아니므로, global은 window별로 돌려준다.
+
 ## Sequence-only
 
 ```python
-from protein_jepa.data.synthetic import sequence_record
-record = sequence_record("MARGKKIGYS")
-features = model.encode(record, mode="sequence")["seq"]
+features = model.encode_sequence("MARGKKIGYS")
 ```
 
 이 경로는 BB/SC/AA encoder를 실행하지 않는다. Unknown residue는 X로 입력할 수 있으며 known sequence mask가 이를 구분한다.

@@ -286,12 +286,13 @@ python scripts/make_effdock_ablations.py --base configs/effdock_cueq_gpu.yaml \
   --output runs/ablation-configs --seeds 17 29 43
 ```
 
-두 번째 명령은 23개 variant(interaction 10개, encoder·predictor 실험 6개, typed latent 2개, masking·EMA·covariance·heat-kernel MMD 5개) × 3개 seed의 완전한 설정을 생성하며 **학습/job 제출을 시작하지 않습니다.** Equal-step/equal-compute 및 parameter-matched 비교를 구분하세요. 작은 smoke loss로 품질 순위를 판단하지 않습니다.
+두 번째 명령은 37개 variant × 3개 seed의 완전한 설정을 생성합니다. 구성은 interaction 10개, encoder·predictor 실험 6개, typed latent 2개, 기하 입력·global readout 3개, masking·EMA·covariance·heat-kernel MMD 5개, 그리고 설계 명세 27절의 비교 11개(teacher-free, cosine, raw reconstruction, node-only, seq-only, task 부분집합, crop 크기)입니다. 이 명령은 **학습/job 제출을 시작하지 않습니다.** Equal-step/equal-compute 및 parameter-matched 비교를 구분하세요. 작은 smoke loss로 품질 순위를 판단하지 않습니다.
 
 ## 문서
 
 | 문서 | 내용 |
 |---|---|
+| [SPEC_COMPLIANCE_KO.md](docs/SPEC_COMPLIANCE_KO.md) | 설계 명세의 절마다 구현 위치·확인 테스트·보류 항목 |
 | [TYPED_LATENT_KO.md](docs/TYPED_LATENT_KO.md) | typed latent 계약·구현·council 기록·22개 단백질 overfit 결과 |
 | [JEPA_TARGETS_KO.md](docs/JEPA_TARGETS_KO.md) | target·predictor 결함 수정, target·predictor 정의, council 기록, 검증 범위 |
 | [EFFDOCK_UPGRADE_KO.md](docs/EFFDOCK_UPGRADE_KO.md) | 원본 EFF-Dock 비교, 수식, 강화 tradeoff, 후속 분석 |
