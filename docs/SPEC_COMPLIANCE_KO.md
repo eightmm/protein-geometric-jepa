@@ -9,7 +9,7 @@
 | 5 | residue key, 원자–residue mapping, 좌표와 mask 분리 | `data/records.py` (`present`는 좌표에서 추론하지 않음), `(atom_residue, atom_slot)` | `test_data.py` |
 | 6.1–6.2 | backbone 좌표·방향·결합각·φψω·frame·virtual Cβ, Cα 각/이면각, 순방향 방향 | `geometry/features.py::backbone_features` | `test_geometry.py` |
 | 6.3 | residue pair 기하 `R_iᵀ(x_j−x_i)`, `R_iᵀR_j` (불변) | `data/graphs.py::frame_pair_features`, residue graph edge 입력 (`pair_frame_features`) | `test_frame_pair_features_convention_and_invariance` |
-| 7.1 | SC 원자 좌표, 원소, 결합, backbone anchor, (선택) `R_iᵀ(x_a−x_CA)` | `AtomStem`; local frame 좌표는 `sc_local_frame` (기본 off: 22개 단백질에서 retrieval 변화 없이 SC latent 크기를 키워 전체 effective rank를 49→3으로 낮춤) | 회전 등변·숨긴 좌표 변경 테스트 |
+| 7.1 | SC 원자 좌표, 원소, 결합, backbone anchor, (선택) `R_iᵀ(x_a−x_CA)` | `AtomStem`; local frame 좌표는 `sc_local_frame` (기본 off: 22개 단백질에서 retrieval 변화 없이 SC latent 크기를 키워 전체 effective rank를 49→3으로 낮춤, [기록](../reports/spec_completion/README.md)) | 회전 등변·숨긴 좌표 변경 테스트 |
 | 7.2 | χ1–χ4, defined/observed/periodicity, χ5 확장 슬롯 | `chi_features` (lookup table) | `test_geometry.py` |
 | 7.3 | 대칭 원자 이름 | χ는 `p=2` 인코딩, SC/AA encoder는 원소 token만 사용, atom loss는 AlphaFold renaming에 대해 residue별 최소값 | `test_symmetric_atom_naming_is_not_a_learnable_difference` |
 | 14.1–14.2 | 128/256 연속 parent crop, target = crop 전체 | `random_crop` (chain 내부, CA 관측 ≥ 50%) | `test_data.py` |
