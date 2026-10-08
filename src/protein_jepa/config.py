@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field, asdict, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 import warnings
 import yaml
@@ -29,6 +29,9 @@ class ModelConfig:
     frame_channels: int = 0
     gram_channels: int = 4
     latent_typing: str = "typed"
+    global_latent_types: str = "sem_eq"
+    # Separate visible-only collect/broadcast inside each structure tower.
+    encoder_global_transport: str = "none"
     # Predictor: joint self-attention over context and mask tokens (I-JEPA style).
     predictor_layers: int = 4
     atom_decoder_layers: int = 2
@@ -45,6 +48,7 @@ class ModelConfig:
     # SC atoms see their position in the residue's backbone frame (spec 7.1).
     pair_frame_features: bool = True
     sc_local_frame: bool = True
+    sc_shape_features: bool = True
     backend: str = "reference"
     dropout: float = 0.0
     # Explicit architecture selection: old checkpoints/configs remain baseline.
@@ -78,6 +82,10 @@ class ModelConfig:
                 raise ValueError(f"{key} must be nonnegative.")
         if self.latent_typing not in {"typed", "euclidean"}:
             raise ValueError("latent_typing must be typed or euclidean.")
+        if self.global_latent_types not in {"sem_eq", "legacy"}:
+            raise ValueError("global_latent_types must be sem_eq or legacy.")
+        if self.encoder_global_transport not in {"none", "mean", "learned"}:
+            raise ValueError("encoder_global_transport must be none, mean or learned.")
         if self.frame_channels and self.latent_typing != "typed":
             raise ValueError("frame_channels require latent_typing: typed (SO(3) projection).")
         for key in ("scalar", "vector", "tensor", "sequence_layers", "internal_layers", "latent_scalar",
@@ -110,7 +118,7 @@ class ModelConfig:
             raise ValueError("effdock_residual_scale must be in (0,1].")
         if self.effdock_aggregation not in {"soft", "gate", "degree"}:
             raise ValueError("Invalid effdock_aggregation.")
-        for key in ("pair_frame_features", "sc_local_frame"):
+        for key in ("pair_frame_features", "sc_local_frame", "sc_shape_features"):
             if not isinstance(getattr(self, key), bool):
                 raise ValueError(f"{key} must be boolean.")
         for key in ("effdock_conditioning", "effdock_dual_radial", "effdock_distance_decay",
@@ -228,7 +236,8 @@ def _checked(cls, data):
 # Architecture options added after checkpoints already existed: a stored
 # config that omits one was built without it, so it loads with this value
 # (fresh YAML configs get the dataclass defaults instead).
-LEGACY_MODEL_DEFAULTS = {"pair_frame_features": False, "sc_local_frame": False}
+LEGACY_MODEL_DEFAULTS = {"pair_frame_features": False, "sc_local_frame": False, "sc_shape_features": False,
+                         "global_latent_types": "legacy", "encoder_global_transport": "none"}
 
 
 def model_config(data: dict) -> ModelConfig:

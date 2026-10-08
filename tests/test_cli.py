@@ -95,9 +95,15 @@ def test_cli_prepare_train_encode_and_evaluate(tmp_path,tiny_cfg):
           '--mode','sequence','--output',str(tmp_path/'sequence.pt')])
     report=tmp_path/'evaluation.json'
     main(['evaluate','--checkpoint',str(checkpoint),'--manifest',str(manifest),
-          '--max-records','1','--output',str(report)])
+          '--max-records','1','--output',str(report),'--controls','--audit-content','--gradients'])
     result=json.loads(report.read_text())
     assert result['split']=='val' and len(result['metrics'])==9
+    assert result['content_audit']['passed'] and result['training_manifest_matches']
+    assert result['metrics']['bb_infill']['retrieval_records']==1
+    assert result['metrics']['sc_infill']['valid_atom_targets']>0
+    assert result['position_mask_only']['bb_infill']['node_chance'] is not None
+    assert result['global_diagnostics']['bb']['sem']['effective_rank'] is None
+    assert len(result['task_gradients']['tasks'])==9
     with pytest.raises(ValueError,match='positive'):
         evaluate(checkpoint,manifest,tmp_path/'bad.json',max_records=0)
 

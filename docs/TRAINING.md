@@ -68,7 +68,7 @@ MANIFEST=/abs/manifest.jsonl OUTDIR=/abs/runs/jepa CONFIG=configs/effdock_cueq_g
 | `loader_workers` | 0 | crop·mask를 미리 만드는 background process 수(forkserver/spawn). 0은 main process에서 만든다. `train()`을 직접 부르는 script는 `if __name__ == "__main__":` guard가 필요하다 |
 | `dist_backend` | auto | auto는 CUDA면 nccl, CPU면 gloo. gloo + CUDA는 GPU 하나를 여러 rank가 나눠 쓰는 시험용 |
 
-- **Sample은 (seed, rank, step, sample 번호)의 순수 함수다.** sampler 상태를 checkpoint에 두지 않으므로 resume은 step 번호만으로 정확히 이어지고, worker 수가 달라도 같은 sample이 나온다(`test_resume_is_exact_with_workers_and_accumulation`, `test_step_loader_workers_match_in_process`). 이 방식은 checkpoint format 4이며, format 3 checkpoint의 weight는 읽지만 그 학습을 resume하지는 않는다.
+- **Sample은 (seed, rank, step, sample 번호)의 순수 함수다.** sampler 상태를 checkpoint에 두지 않으므로 resume은 step 번호만으로 정확히 이어지고, worker 수가 달라도 같은 sample이 나온다(`test_resume_is_exact_with_workers_and_accumulation`, `test_step_loader_workers_match_in_process`). 현재 checkpoint는 format 6이다. Format 3/4/5 weight는 legacy inference로 읽지만 그 학습을 resume하지는 않는다.
 - **Batch:** microbatch 안에서 같은 task의 sample들은 하나의 disjoint-union batch로 계산한다. graph edge는 record 안에만 생기고, Transformer와 predictor attention은 record별 padding으로 서로를 보지 않으며, loss와 진단값은 record별로 계산한다. 결과는 sample을 하나씩 계산한 것과 같다(`test_packed_group_equals_separate_samples`). task가 9개이므로 task당 여러 sample이 모이도록 batch를 수십 단위로 잡아야 처리량이 오른다([측정](../reports/batching/README.md)).
 - **Accumulation:** metrics의 `samples`에는 모든 microbatch의 sample이 들어가고, `regularization`은 microbatch별 목록이 된다. task별 loss 평균은 microbatch 안에서 하므로, `batch_size=B, accumulation_steps=K`는 `batch_size=B×K` 한 번과 수치가 정확히 같지는 않다. 유효 batch는 `world × K × B`이고 learning rate는 자동으로 조정하지 않는다.
 - **정밀도:** float32 전용이다. TF32는 속도 이득이 없었고 loss의 회전 불변 오차를 3e-7에서 6e-4로 키웠다. bf16 autocast는 지원하지 않는다([측정](../reports/training_env/README.md)).
@@ -85,10 +85,25 @@ MANIFEST=/abs/manifest.jsonl OUTDIR=/abs/runs/jepa CONFIG=configs/effdock_cueq_g
 ```bash
 protein-jepa evaluate --checkpoint runs/reference_real/last.pt \
   --manifest data/manifest.jsonl --split val --max-records 32 \
-  --output runs/reference_real/validation.json
+  --output runs/reference_real/validation.json --controls --audit-content
 ```
 
 이는 동일 frozen online/teacher로 계산한 held-out latent prediction loss다. Downstream function/affinity/interface accuracy가 아니다. 모델을 검증 split에 fine-tune하지 않는다.
+
+평가에는 task별 node/global/atom loss, centred retrieval·chance·lift, kind별 유효 target 수, 유효 atom target 수와 full observed crop의 view별 global 진단이 포함된다. Global sem의 std/rank와 irreps의 invariant Gram std/rank를 보고하므로 전역 회전만으로 다양성을 부풀리지 않는다. 수치 잡음을 rank로 세지 않도록 평균 std가 feature RMS의 1e-4 이하이면 rank는 0, 표본이 한 개면 null이다. `training_manifest_matches`가 false면 checkpoint의 학습 데이터와의 분리를 이 manifest만으로 검증할 수 없다.
+
+`--controls`는 동일 mask·position·관측 유효성 metadata를 남기고 context latent 내용을 0으로 만드는 frozen intervention이다. 별도로 학습한 position-only baseline이 아니며, 낮은 control 점수만으로 shortcut을 배제하지 않는다. `--gradients`는 task당 첫 pair 하나의 eval-mode gradient norm/cosine을 추가한다. 기존 optimizer·gradient는 변경하지 않으며 실제 DDP/accumulation step의 기여도를 측정한 값은 아니다. Gradient probe는 forward-only 평가보다 비용이 크므로 선택 실행한다.
+
+`--audit-content`는 전체 manifest의 NPZ를 읽어 split 간 동일 서열·동일 content를 검사한다. 큰 corpus에서는 별도 audit을 먼저 실행한다. 선택적 identity screen은 아래처럼 pair 수를 제한하며, cap 때문에 미검사 pair가 남으면 실패/불완전 상태로 보고한다. Global alignment(2/-1, gap open -10, extension -0.5)의 동일한 known residue 수를 두 서열 중 긴 길이로 나눈다. 이는 sequence clustering이나 remote homology 검증을 대신하지 않는다.
+
+```bash
+protein-jepa audit-manifest data/manifest.jsonl --content
+protein-jepa audit-manifest data/manifest.jsonl --min-identity 0.8 --max-pairs 10000
+```
+
+새 학습은 checkpoint format 6과 `global_latent_types: sem_eq`를 쓴다. Format 3/4/5는 legacy inference로 읽고 학습 resume은 거부한다. `encoder_global_transport: mean|learned`는 opt-in이며 기본은 `none`이다. `sc_shape_features`는 새 설정에서 기본 true이며 이전 저장 설정에서 키가 없으면 false로 복원한다. 같은 format 6 checkpoint도 shape 옵션이 다른 모델로 resume하면 거부한다. Ablation writer는 global legacy/mean/learned 및 `no_sc_shape` 대조군을 포함한 27개 variant를 만들며 학습은 시작하지 않는다.
+
+Feature 계산의 CPU 측정은 `PYTHONPATH=src python scripts/benchmark_geometry.py --output /tmp/geometry-benchmark.json`으로 실행할 수 있다. `--no-sc-shape`로 shape 입력 비용을 분리한다. Synthetic 128/256 residue, 작은 reference 모델, CPU 한 thread의 timing이며 GPU throughput이나 학습 품질 측정이 아니다. 구현·검증 범위는 [SC shape 보고서](../reports/sc_shape/README.md)에 있다.
 
 ## 7. 운영상 현재 한계
 

@@ -41,6 +41,10 @@ def main():
         'euclidean_latents': {'interaction': 'effdock', 'latent_typing': 'euclidean'},
         'direction_frame_heads': {'interaction': 'effdock', 'direction_channels': 4,
                                   'frame_channels': 2},
+        'legacy_global_latents': {'global_latent_types': 'legacy'},
+        'global_mean': {'encoder_global_transport': 'mean'},
+        'global_learned': {'encoder_global_transport': 'learned'},
+        'no_sc_shape': {'sc_shape_features': False},
     }
     training_changes = {
         'single_span_mask': {'mask_blocks': 1},

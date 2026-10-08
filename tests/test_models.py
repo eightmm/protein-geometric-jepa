@@ -18,8 +18,11 @@ def test_reference_message_equivariance():
     assert_fiber_close(layer(h,u).rotate(r),layer(h.rotate(r),u@r.T))
 
 
+@pytest.mark.parametrize('transport',['none','mean','learned'])
 @pytest.mark.parametrize('view',['bb','sc','aa'])
-def test_structure_encoder_equivariance(model,protein,view):
+def test_structure_encoder_equivariance(model,protein,view,transport):
+    from protein_jepa.models.jepa import ProteinJEPA
+    model=ProteinJEPA(replace(model.cfg,encoder_global_transport=transport)).eval()
     r=random_rotation(); t=torch.tensor([2.,-1.,4.])
     with torch.no_grad():
         a=model.online.encoder(protein,(view,))[view]
@@ -30,7 +33,10 @@ def test_structure_encoder_equivariance(model,protein,view):
     assert torch.equal(a.node_valid,b.node_valid)
 
 
-def test_backbone_isolation_from_sequence_and_sidechain(model,protein):
+@pytest.mark.parametrize('transport',['none','mean','learned'])
+def test_backbone_isolation_from_sequence_and_sidechain(model,protein,transport):
+    from protein_jepa.models.jepa import ProteinJEPA
+    model=ProteinJEPA(replace(model.cfg,encoder_global_transport=transport)).eval()
     x=protein.xyz.clone(); x[:,4:]+=torch.randn_like(x[:,4:])*100
     changed=replace(protein,xyz=x,seq=(protein.seq+7)%20)
     with torch.no_grad():
@@ -47,8 +53,11 @@ def test_aa_fusion_does_not_mutate_bb(model,protein):
     assert_fiber_close(a.nodes,b.nodes,atol=0,rtol=0)
 
 
+@pytest.mark.parametrize('transport',['none','mean','learned'])
 @pytest.mark.parametrize('task',['bb_infill','sc_infill','aa_infill'])
-def test_hidden_target_mutation_cannot_change_context_or_prediction(model,protein,task):
+def test_hidden_target_mutation_cannot_change_context_or_prediction(model,protein,task,transport):
+    from protein_jepa.models.jepa import ProteinJEPA
+    model=ProteinJEPA(replace(model.cfg,encoder_global_transport=transport)).eval()
     obs=make_observation(protein,task,.3,torch.Generator().manual_seed(2))
     x=protein.xyz.clone(); hidden=~obs.atom_visible & protein.present
     x[hidden]=torch.randn_like(x[hidden])*1000
@@ -242,3 +251,95 @@ def test_tensor_channels_symmetric_traceless(model,protein):
 def test_unknown_backend_rejected(tiny_cfg):
     with pytest.raises(ValueError):
         EquivariantBlock(tiny_cfg.dims,'pretend-cueq')
+
+
+def test_global_contract_excludes_manifolds_and_ignores_forbidden_inputs(tiny_cfg,protein):
+    from protein_jepa.models.jepa import ProteinJEPA
+    cfg=replace(tiny_cfg,direction_channels=2,frame_channels=1)
+    model=ProteinJEPA(cfg).eval()
+    obs=make_observation(protein,'bb_infill',.3,torch.Generator().manual_seed(2))
+    with torch.no_grad():
+        ctx=model.context_latents(protein,obs.spec.context,obs.atom_visible,obs.seq_visible)
+        z=ctx['bb'].global_state
+        assert z.circ.shape[1]==z.dir.shape[1]==z.frame.shape[1]==z.strength.shape[1]==0
+        assert ctx['bb'].nodes.circ.shape[1]==cfg.circular_channels
+        query=torch.where(obs.target_residues)[0]
+        original=model.predictor(ctx,protein.seq_pos,'bb',query)
+        extra=replace(z,circ=torch.randn(1,cfg.circular_channels,2),dir=torch.randn(1,2,3),
+                      frame=torch.randn(1,1,3,3),strength=torch.ones(1,3))
+        changed=model.predictor({'bb':replace(ctx['bb'],global_state=extra)},protein.seq_pos,'bb',query)
+        removed=model.predictor({'bb':replace(ctx['bb'],global_valid=torch.zeros(1,dtype=torch.bool))},
+                                protein.seq_pos,'bb',query)
+    assert_fiber_close(original.nodes,changed.nodes,atol=0,rtol=0)
+    assert_fiber_close(original.global_state,changed.global_state,atol=0,rtol=0)
+    assert original.global_state.circ.shape[1]==original.global_state.frame.shape[1]==0
+    assert not torch.equal(original.nodes.sem,removed.nodes.sem)
+
+
+def test_global_diversity_is_rotation_invariant_and_detects_repeated_records(model,protein):
+    from protein_jepa.data.synthetic import synthetic_record
+    from protein_jepa.evaluate import global_diagnostics
+    records=[protein,synthetic_record(len(protein),12)]
+    transformed=[rec.rigid_transform(random_rotation(),torch.randn(3)) for rec in records]
+    original=global_diagnostics(model,records)
+    rotated=global_diagnostics(model,transformed)
+    repeated=global_diagnostics(model,[protein,protein])
+    same_shape=global_diagnostics(model,[protein,protein.rigid_transform(random_rotation(),torch.randn(3))])
+    for view, info in original.items():
+        assert info['samples']==2
+        for kind in ('sem','v','t'):
+            if kind not in info:
+                continue
+            a=info[kind] if kind=='sem' else info[kind]['gram']
+            b=rotated[view][kind] if kind=='sem' else rotated[view][kind]['gram']
+            for metric in ('mean_std','effective_rank'):
+                assert a[metric]==pytest.approx(b[metric],rel=1e-3,abs=1e-6)
+            duplicate=(repeated[view][kind] if kind=='sem' else repeated[view][kind]['gram'])
+            assert duplicate['mean_std']==duplicate['effective_rank']==0
+            rigid_copy=(same_shape[view][kind] if kind=='sem' else same_shape[view][kind]['gram'])
+            assert rigid_copy['effective_rank']==0
+    assert original['bb']['sem']['mean_std']>0
+
+
+def test_shared_backbone_geometry_matches_standalone_paths_for_each_mask(model,protein,monkeypatch):
+    import protein_jepa.models.encoders as encoders
+    from protein_jepa.data.batch import pack
+    record=pack(protein)
+    calls=[];original=encoders.backbone_features
+    def count(*args,**kwargs):
+        calls.append(1)
+        return original(*args,**kwargs)
+    monkeypatch.setattr(encoders,'backbone_features',count)
+    encoder=model.online.encoder
+    views=('seq','bb','sc','aa','bb_internal','chi')
+    for mask in (protein.present,make_observation(protein,'aa_infill',.3,torch.Generator().manual_seed(2)).atom_visible):
+        with torch.no_grad():
+            calls.clear()
+            shared=encoder(record,views,mask)
+            assert len(calls)==1
+            bb=encoder.bb(record,mask);sc=encoder.sc(record,mask)
+            separate={'bb':bb,'sc':sc,'aa':encoder.aa(record,mask,bb,sc),
+                      'bb_internal':encoder.bb_internal(record,mask)}
+        for view,state in separate.items():
+            assert_fiber_close(shared[view].nodes,state.nodes,atol=0,rtol=0)
+            assert_fiber_close(shared[view].global_state,state.global_state,atol=0,rtol=0)
+        with torch.no_grad():
+            calls.clear()
+            encoder(record,('sc',),mask)
+            assert not calls
+
+
+def test_zero_sc_shape_projection_recovers_encoder_without_shape(tiny_cfg,protein):
+    from protein_jepa.models.jepa import ProteinJEPA
+    reference=ProteinJEPA(replace(tiny_cfg,sc_shape_features=False)).eval()
+    extended=ProteinJEPA(tiny_cfg).eval()
+    extended.load_state_dict(reference.state_dict(),strict=False)
+    with torch.no_grad():
+        for parameter in extended.online.encoder.sc.shape_map.parameters():
+            parameter.zero_()
+        a=reference.online.encoder(protein,('bb','sc','aa'))
+        b=extended.online.encoder(protein,('bb','sc','aa'))
+    for view in a:
+        assert_fiber_close(a[view].nodes,b[view].nodes,atol=0,rtol=0)
+        assert_fiber_close(a[view].global_state,b[view].global_state,atol=0,rtol=0)
+        assert_fiber_close(a[view].atoms,b[view].atoms,atol=0,rtol=0)

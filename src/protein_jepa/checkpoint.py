@@ -8,8 +8,9 @@ import torch
 # 4 = same weights; samples are a pure function of the step (no sampler state).
 # 5 = rename-invariant atom loss; older formats load (legacy architecture
 #     defaults) for inference but do not resume.
-FORMAT_VERSION = 5
-READABLE = (3, 4, 5)
+# 6 = explicit global latent contract and optional encoder global transport.
+FORMAT_VERSION = 6
+READABLE = (3, 4, 5, 6)
 
 
 def rng_state():

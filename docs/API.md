@@ -25,7 +25,8 @@ from protein_jepa.models.jepa import ProteinJEPA
 from protein_jepa.checkpoint import load_checkpoint
 
 checkpoint = load_checkpoint("runs/pretrain/last.pt")
-model = ProteinJEPA(ModelConfig(**checkpoint["model_config"]))
+from protein_jepa.config import model_config
+model = ProteinJEPA(model_config(checkpoint["model_config"]))
 model.load_state_dict(checkpoint["model"])
 
 features = model.encode(record, mode="all_atom")["aa"]
@@ -66,6 +67,10 @@ residue_logits = residue_head(features.nodes)
 ```
 
 Classification/regression loss와 train/val/test task data는 별도로 연결한다. 위 head는 생성 직후 random initialization이다.
+
+`protein_jepa.downstream.frozen_linear_probe`는 이미 추출한 invariant feature 행렬에 CPU ridge classification/regression을 적합한다. `train_clusters`/`eval_clusters`는 sample별 독립 homology audit의 cluster ID이며 중복 cluster를 거부한다. Feature 평균·scale과 target baseline은 fitting split에서만 계산한다. 함수는 encoder gradient를 만들지 않으며 prediction, 계수와 train-only 통계, 정확도/MSE 및 단순 baseline을 반환한다. Cluster ID의 실제 생물학적 타당성이나 label provenance는 caller가 검증해야 한다. 실제 label dataset은 제공하지 않는다.
+
+`protein_jepa.geometry.features.sidechain_shape_features(record, visible)`는 관측 SC centroid−CA offset `[L,3]`(Å), population covariance `[L,3,3]`(Å²), SC 존재 validity와 CA anchor validity를 반환한다. Visible mask를 적용한 뒤 원자별로 동일한 가중치를 사용하며 OXT는 제외한다. SC가 없으면 covariance/offset은 0, CA만 없으면 offset은 0이다. Covariance는 SC가 관측되면 유지한다. 이는 학습된 latent가 아니라 encoder 입력 geometry이다.
 
 ## Fine-tuning
 

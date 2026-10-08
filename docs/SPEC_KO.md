@@ -138,7 +138,13 @@ Reflection은 augmentation에 넣지 않는다. Reference block에는 cross prod
 
 ## 7. Sidechain Cartesian 및 chi view
 
-SC atom stem은 visible sidechain atoms와 visible Cα anchor를 사용한다. Element embedding, intra-residue connectivity, relative direction/distance를 사용한다. Residue identity가 이 경로에 포함될 수 있음을 허용한다.
+SC atom stem은 visible sidechain atoms와 visible Cα anchor, 관측된 N–Cα–C local frame을 사용한다(`sc_local_frame`, 기본 true). Backbone은 SC의 허용된 조건부 입력이다. 숨기거나 결측된 backbone 원자로 frame을 만들지 않는다. Element embedding, intra-residue connectivity, relative direction/distance를 사용한다. Residue identity가 이 경로에 포함될 수 있음을 허용한다.
+
+`sc_shape_features` 기본값은 true이다. Residue마다 관측 SC heavy atom(OXT 제외)의 unweighted centroid와 population covariance를 batch reduction/matrix multiply로 구한다. CA가 관측되면 centroid−CA vector와 그 norm을 사용하고, covariance의 trace와 STF 부분은 CA가 없어도 계산할 수 있다. SC가 없으면 모든 값은 0이고 shape validity는 false이다. CA가 없으면 offset과 anchor validity는 0/false이다. Centroid를 CA로 대체하지 않는다.
+
+입력 Fiber는 scalar 4개(offset norm/4, covariance trace/16, shape validity, anchor validity), vector 1개(offset/4), tensor 1개(STF covariance/16)이다. Bias 없는 `FiberLinear`를 통해 기존 hidden 차원으로 project하고 0.1 residual로 SC residue pooling 뒤에 더한다. AA는 기존 SC fusion 경로로 이를 받는다. Pure BB와 atom query 생성에는 추가 입력이 없고, latent 종류·출력 차원·loss는 유지한다. `no_sc_shape` 대조군으로 품질 이득을 평가한다.
+
+BB periodic atom window 4개와 bond direction 3개는 각각 묶어서 계산한다. 동일 encoder forward와 observation mask 안에서 BB feature를 한 번 계산해 BB/SC/AA/BB-internal에 공유한다. SC 단독 경로는 필요한 N–CA–C frame만 계산한다. Task·teacher·forward 사이에 geometry cache를 공유하지 않는다. 벡터화는 기존 named-atom/peptide-break/visibility mask를 유지하며 float32 반올림 수준의 차이가 있을 수 있다.
 
 Chi는 atom array의 연속 slice가 아니라 **정의된 네 atom name**으로 계산한다. 예를 들어 ILE χ2는 CA–CB–CG1–CD1이다.
 
@@ -227,6 +233,8 @@ Self edge는 index로 명시적으로 차단한다. 수치상 cdist diagonal이 
 
 Sequence에는 CLS token이 있다. 구조에는 `GlobalReadout`이 residue features를 invariant attention으로 집계한다.
 
+`encoder_global_transport` 기본값은 `none`이다. Opt-in `mean`/`learned`는 BB residue layer 뒤마다, SC residue pooling 뒤, AA residue refinement 뒤에서 record별 visible node를 모아 gated residual로 다시 전달한다. `mean`은 평균 집계, `learned`는 invariant attention 집계이며 둘은 동일한 query·projection·broadcast gate 구조를 사용한다. Attention을 uniform으로 두고 공유 가중치를 맞추면 평균 대조군과 같은 출력을 낸다. Tower마다 별도 module을 가지므로 SC/AA 전역 정보가 pure BB에 역류하지 않는다. Gate의 residual scale을 0으로 두면 기존 encoder 출력을 정확히 복원한다. 성능 이득은 대조 실험이 필요한 가설이다.
+
 \[
 G^{BB}=G^{(0)}\oplus G^{(1)}\oplus G^{(2)},\quad G^{AA}=G^{AA,(0,1,2)}
 \]
@@ -309,6 +317,8 @@ frame [L, Kr, 3, 3] SO(3) 회전, 두 vector의 Gram–Schmidt (6D 표현) — b
 - v, t: soft per-token RMS. τ = target_floor × 평균 RMS이고, log 크기 scalar 두 개를 sem에 덧붙인다.
 - circ, dir, frame: 이미 manifold 위에 있다. 크기가 crop 평균의 10% 미만인 raw vector에서 나온 dir/frame target은 mask한다.
 - Global: sem은 layer norm이고, reference는 crop node RMS를 쓴다. sem과 irreps만 쓰고, 원·frame 같은 manifold type은 global에 두지 않는다.
+
+새 설정의 `global_latent_types: sem_eq`는 context, teacher target, predictor 출력 모두에서 이 global 계약을 적용한다. Node/global head 가중치는 공유하지만 global 호출에서는 manifold projection을 실행하지 않는다. Predictor adapter는 global의 해당 입력을 0으로 채워 기존 parameter layout을 유지한다. 옛 checkpoint에서 이 옵션이 없으면 `legacy`로 복원하여 기존 global circle/direction/frame 경로와 inference 동작을 보존한다. Legacy circle도 prediction loss로 학습되던 채널이며, 수정 이유는 수학적 불가능성이 아니라 합의된 global 계약과의 불일치다.
 - Atom: head 없이 hidden을 정규화한다. node용으로 학습된 head를 atom 상태에 쓰지 않기 위해서다.
 
 `latent_typing: euclidean`은 all-Euclidean baseline이다. head와 용량은 같지만 manifold 사영을 하지 않고 MSE를 쓴다. frame은 이 모드에서 지원하지 않는다.
@@ -357,6 +367,8 @@ DDP는 task별로 일부 parameter만 사용하므로 `find_unused_parameters=Tr
 Sample index별 task 배정은 rank와 무관하다. 따라서 같은 step에서 모든 rank의 task 구성이 같다. Regularizer 통계는 rank-local이다. 전역 batch 통계와 동등하지 않다. DDP는 gradient를 평균한다.
 
 Checkpoint는 online/teacher/predictor, optimizer, scheduler, global step, rank별 torch CPU/CUDA RNG(dropout용; sample은 step 번호로 재현된다), configuration, manifest fingerprint와 world size를 저장한다. Atomic replace와 weights_only load를 사용한다.
+
+현재 format은 6이다. Format 3/4/5는 저장 당시 architecture 기본값으로 inference에 읽을 수 있지만 format 6 학습으로 exact resume하지 않는다. Global 계약이나 transport mode가 다른 실행도 resume에서 거부한다.
 
 Resume는 같은 world size, model/backend, task schedule, 학습 계획 및 dataset manifest에서 지원한다. 실행을 일찍 끊으려면 총 steps를 바꾸지 말고 `--stop-after`를 사용한다.
 

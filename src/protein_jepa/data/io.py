@@ -3,7 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import json
 import torch
-from .constants import AA3, AA1, AA_TO_ID, ATOM_ID, N_ATOMS, UNK
+from .constants import AA1, AA_TO_ID, ATOM_ID, N_ATOMS, UNK
 from .records import ProteinRecord
 
 

@@ -115,15 +115,24 @@ class LatentAdapter(nn.Module):
     directions and frame axes enter as l=1 vectors (all rotate correctly)."""
     def __init__(self, spec: LatentSpec, dims: FiberDims):
         super().__init__()
+        self.spec = spec
         self.s = nn.Linear(spec.sem+2*spec.circ, dims.scalar)
         self.v = ChannelMix(spec.vector+spec.dir+3*spec.frame, dims.vector)
         self.t = ChannelMix(spec.tensor, dims.tensor)
 
-    def forward(self, z: TypedLatent) -> Fiber:
+    def forward(self, z: TypedLatent, global_only: bool = False) -> Fiber:
         n = len(z.sem)
-        s = self.s(torch.cat((z.sem, z.circ.flatten(1)), -1))
-        axes = z.frame.transpose(-1, -2).reshape(n, -1, 3)
-        return Fiber(s, self.v(torch.cat((z.v, z.dir, axes), 1)), self.t(z.t))
+        # Zero padding preserves the node adapter's weights and old checkpoint
+        # layout while keeping global inputs strictly semantic + irreps.
+        if global_only:
+            circles = z.sem.new_zeros(n, 2*self.spec.circ)
+            extra_vectors = z.sem.new_zeros(n, self.spec.dir+3*self.spec.frame, 3)
+        else:
+            circles = z.circ.flatten(1)
+            axes = z.frame.transpose(-1, -2).reshape(n, -1, 3)
+            extra_vectors = torch.cat((z.dir, axes), 1)
+        s = self.s(torch.cat((z.sem, circles), -1))
+        return Fiber(s, self.v(torch.cat((z.v, extra_vectors), 1)), self.t(z.t))
 
 
 class EquivariantSelfAttention(nn.Module):
@@ -246,6 +255,7 @@ class CrossViewPredictor(nn.Module):
     """
     def __init__(self, cfg: ModelConfig):
         super().__init__()
+        self.global_only = cfg.global_latent_types == "sem_eq"
         d = cfg.dims
         self.dims = d
         typed = cfg.latent_typing == "typed"
@@ -310,7 +320,7 @@ class CrossViewPredictor(nn.Module):
                 add(h, positions[latent.index], False, batch[latent.index])
             records = torch.where(latent.global_valid)[0]
             if len(records):
-                h = self.input_maps[name](latent.global_state.index(records))
+                h = self.input_maps[name](latent.global_state.index(records), self.global_only)
                 h.s = h.s+self._scalar(name, "global", 0, like)
                 add(h, positions.new_zeros(len(records)), True, records)
         n_context = sum(len(h.s) for h in tokens)
@@ -326,7 +336,7 @@ class CrossViewPredictor(nn.Module):
         stage1 = self.final_norm(h)
         head = self.heads[target_view]
         node = head(stage1.index(slice(n_context, n_context+n_nodes)))
-        glob_out = head(stage1.index(slice(n_context+n_nodes, None)))
+        glob_out = head(stage1.index(slice(n_context+n_nodes, None)), self.global_only)
         atom = None
         if atom_residues is not None:
             q = self._queries(len(atom_residues), target_view, "atom")

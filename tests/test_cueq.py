@@ -72,14 +72,15 @@ def test_effdock_cueq_encoder_and_global_equivariance(tiny_cfg, protein, view):
 
 @pytest.mark.cueq
 @pytest.mark.skipif(not available, reason='CuEq packages are not installed')
-def test_effdock_cueq_all_tasks_gradients_and_mask_isolation(tiny_cfg, protein):
+@pytest.mark.parametrize('transport',['none','mean','learned'])
+def test_effdock_cueq_all_tasks_gradients_and_mask_isolation(tiny_cfg, protein, transport):
     from dataclasses import replace
     from protein_jepa.models.jepa import ProteinJEPA
     from protein_jepa.config import TrainConfig
     from protein_jepa.objectives.tasks import make_observation, TASKS
     from protein_jepa.models.predictors import topology_atoms
     model = ProteinJEPA(replace(tiny_cfg, backend='cueq-naive', interaction='effdock',
-                                effdock_radial_hidden=24))
+                                effdock_radial_hidden=24,encoder_global_transport=transport))
     for task in TASKS:
         model.zero_grad(set_to_none=True)
         obs = make_observation(protein, task, .3, torch.Generator().manual_seed(2))

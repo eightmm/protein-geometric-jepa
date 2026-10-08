@@ -20,7 +20,17 @@
 - **Loss**: type마다 거리를 따로 씁니다. sem은 MSE, irreps는 Frobenius, 원과 방향은 1 − cos, frame은 chordal 거리입니다.
 - **Collapse 방지**: sem에는 variance floor를 걸고, 원에는 channel별 floor를 겁니다. arXiv:2609.21656의 heat-kernel MMD(`torus_mmd`, `sphere_mmd`)는 ablation 옵션입니다.
 - **실행 검증**: 단백질 22개로 실제 학습과 같은 방식의 확률적 overfit(random crop, 매번 새 mask, task 혼합, EMA)을 돌렸습니다. loss는 37%까지 떨어졌고, retrieval은 우연 수준의 6.8배이며 계속 상승 중이었습니다. 이때 covariance 항이 rank 붕괴를 막습니다. 실제 CuEq CUDA 경로도 Blackwell GPU에서 통과했습니다. 테스트는 CPU에서 189 passed / 2 CUDA skips, GPU에서 CuEq·학습 경로 24 passed입니다(`reports/typed_latent/pytest_*.txt`).
-- **비교 기준**: `latent_typing: euclidean`이 all-Euclidean baseline입니다. 근거와 실험 결과는 [TYPED_LATENT_KO.md](docs/TYPED_LATENT_KO.md)에 있습니다. checkpoint는 format 4이고 format 3 weight도 읽습니다. format 1·2는 읽지 않습니다.
+- **비교 기준**: `latent_typing: euclidean`이 all-Euclidean baseline입니다. 근거와 실험 결과는 [TYPED_LATENT_KO.md](docs/TYPED_LATENT_KO.md)에 있습니다. checkpoint는 format 6입니다. Format 3/4/5는 당시 설정의 legacy inference로 읽지만 새 학습으로 resume하지 않습니다. Format 1·2는 읽지 않습니다.
+
+## Global 표현과 평가 진단
+
+Sequence·internal view는 CLS를 쓰고 BB·SC·AA는 학습되는 global readout을 씁니다. 새 설정의 global latent는 context·teacher·predictor에서 모두 semantic + irreps입니다. Node의 circle·direction·frame head는 유지합니다. 전역 범위는 선택한 crop 전체입니다.
+
+`encoder_global_transport: mean|learned`는 visible-only 전역 집계와 gated broadcast를 구조 encoder 안에 추가하는 opt-in 실험입니다(기본 `none`). Tower·record 경계를 유지하며 가짜 global 좌표를 만들지 않습니다. Mean 대조군과 함께 비교해야 하며 품질 개선은 아직 검증되지 않았습니다.
+
+`sc_shape_features`는 기본 true입니다. 관측 SC 원자의 centroid−CA vector, centroid 주위 covariance의 trace와 STF tensor를 기존 scalar/vector/tensor 경로에 작은 residual로 넣고 AA fusion에 전달합니다. 숨겨진 SC를 CA로 대체하지 않으며 출력 latent 차원은 유지합니다. BB torsion·bond direction과 SC moment는 batch로 계산하고, 같은 observation의 BB feature는 한 forward 안에서 공유합니다. 이전 checkpoint에 shape 옵션이 없으면 false로 읽습니다. 범위와 CPU 측정은 [SC shape 보고서](reports/sc_shape/README.md)를 따릅니다.
+
+`evaluate --controls --audit-content`는 retrieval·유효 target 수·global 다양성 및 context 내용 제거 대조군을 보고합니다. `--gradients`는 선택적인 task별 작은 gradient probe입니다. Exact 중복 검사, bounded sequence-identity screen과 frozen linear probe 사용·한계는 [TRAINING.md](docs/TRAINING.md), [API.md](docs/API.md)를 따릅니다. 실제 homology split과 downstream label 검증은 별도로 필요합니다.
 
 ## JEPA target·predictor 결함 수정
 
@@ -251,7 +261,7 @@ flowchart TB
 
 opt-in encoder 실험은 `sc_context: spatial`, `effdock_directional`, `effdock_ffn: bilinear`, `effdock_adaptive_cutoff` 네 가지입니다. 근거는 [JEPA_TARGETS_KO.md](docs/JEPA_TARGETS_KO.md)에 있습니다.
 
-BB output은 좌표, polymer connectivity, backbone direction, frame, φ/ψ/ω, Cα pseudo-angle/dihedral, sidechain geometry와 χ만 사용합니다. SASA, DSSP, secondary-structure rule label이나 residue physicochemical lookup은 사용하지 않습니다. **l=2는 수학적으로 5차원**이며, 3×3 reference 저장 형식과 CuEq의 5-component basis는 명시적으로 변환합니다. 기본 global target은 원래 단백질 전체가 아니라 **선택한 crop 전체**입니다.
+BB output은 좌표, polymer connectivity, backbone direction, frame, φ/ψ/ω, Cα pseudo-angle/dihedral만 사용합니다. SASA, DSSP, secondary-structure rule label이나 residue physicochemical lookup은 사용하지 않습니다. **l=2는 수학적으로 5차원**이며, 3×3 reference 저장 형식과 CuEq의 5-component basis는 명시적으로 변환합니다. 기본 global target은 원래 단백질 전체가 아니라 **선택한 crop 전체**입니다.
 
 ## 실제 CuEq 사용
 
@@ -286,7 +296,7 @@ python scripts/make_effdock_ablations.py --base configs/effdock_cueq_gpu.yaml \
   --output runs/ablation-configs --seeds 17 29 43
 ```
 
-두 번째 명령은 23개 variant(interaction 10개, encoder·predictor 실험 6개, typed latent 2개, masking·EMA·covariance·heat-kernel MMD 5개) × 3개 seed의 완전한 설정을 생성하며 **학습/job 제출을 시작하지 않습니다.** Equal-step/equal-compute 및 parameter-matched 비교를 구분하세요. 작은 smoke loss로 품질 순위를 판단하지 않습니다.
+두 번째 명령은 27개 variant(interaction 10개, encoder·predictor 실험 6개, typed latent 2개, masking·EMA·covariance·heat-kernel MMD 5개, global 계약·transport 대조군 3개, SC shape 대조군 1개) × 3개 seed의 완전한 설정을 생성하며 **학습/job 제출을 시작하지 않습니다.** Equal-step/equal-compute 및 parameter-matched 비교를 구분하세요. 작은 smoke loss로 품질 순위를 판단하지 않습니다.
 
 ## 문서
 

@@ -1,5 +1,5 @@
 """Regression contracts for the EFF-Dock-inspired interaction architecture."""
-from dataclasses import asdict, replace
+from dataclasses import replace
 import pytest
 import torch
 from conftest import assert_fiber_close
@@ -164,6 +164,8 @@ def test_stage_wiring_and_all_ablation_switches(tiny_cfg, protein):
     dict(effdock_expansion=0), dict(effdock_radial_hidden=0), dict(effdock_residual_scale=0),
     dict(effdock_conditioning='false'), dict(effdock_ffn='typo'), dict(sc_context='typo'),
     dict(effdock_adaptive_cutoff=1), dict(predictor_layers=0),
+    dict(global_latent_types='typo'),dict(encoder_global_transport='typo'),
+    dict(sc_shape_features='false'),
     dict(effdock_adaptive_cutoff=True, effdock_aggregation='degree')])
 def test_invalid_config(options):
     with pytest.raises(ValueError):
@@ -216,7 +218,7 @@ def test_ablation_writer_accepts_every_shipped_gpu_preset(tmp_path):
         subprocess.run([sys.executable, str(root/'scripts/make_effdock_ablations.py'),
                         '--base', str(root/'configs'/preset), '--output', str(out), '--seeds', '1'],
                        check=True, capture_output=True)
-        assert len(list(out.glob('*.yaml'))) == 23
+        assert len(list(out.glob('*.yaml'))) == 27
 
 
 def test_format1_checkpoint_rejected(tiny_cfg, tmp_path):
@@ -284,17 +286,116 @@ def test_checkpoint_from_before_new_architecture_options_still_loads(tiny_cfg, t
     architecture it was trained with; resuming across the format change is refused."""
     from protein_jepa.config import model_config
     from protein_jepa.models.jepa import ProteinJEPA
-    old_cfg = replace(tiny_cfg, pair_frame_features=False, sc_local_frame=False)
+    old_cfg = replace(tiny_cfg, pair_frame_features=False, sc_local_frame=False, sc_shape_features=False,
+                      global_latent_types='legacy')
     training = TrainConfig(steps=2, batch_size=1, crop_lengths=[10], threads=1)
     dataset = SyntheticDataset(2, 12, 17)
     train(old_cfg, training, dataset, tmp_path/'r', stop_after=1)
     path = tmp_path/'r/last.pt'
     payload = load_checkpoint(path)
+    reference=ProteinJEPA(old_cfg).eval()
+    reference.load_state_dict(payload['model'])
     payload['model_config'] = {k: v for k, v in payload['model_config'].items()
-                               if k not in ('pair_frame_features', 'sc_local_frame')}
-    payload['format_version'] = 4
+                               if k not in ('pair_frame_features', 'sc_local_frame', 'sc_shape_features',
+                                            'global_latent_types', 'encoder_global_transport')}
+    payload['format_version'] = 5
     torch.save(payload, path)
     stored = load_checkpoint(path)
-    ProteinJEPA(model_config(stored['model_config'])).load_state_dict(stored['model'])
+    rebuilt=ProteinJEPA(model_config(stored['model_config']))
+    rebuilt.load_state_dict(stored['model'])
+    rebuilt.eval()
+    assert rebuilt.cfg.global_latent_types=='legacy' and rebuilt.cfg.encoder_global_transport=='none'
+    from protein_jepa.objectives.tasks import make_observation
+    protein=dataset[0]
+    obs=make_observation(protein,'bb_infill',.3,torch.Generator().manual_seed(2))
+    with torch.no_grad():
+        original=reference.context_latents(protein,obs.spec.context,obs.atom_visible,obs.seq_visible)
+        restored=rebuilt.context_latents(protein,obs.spec.context,obs.atom_visible,obs.seq_visible)
+        assert original['bb'].global_state.circ.shape[1]==old_cfg.circular_channels
+        assert_fiber_close(original['bb'].global_state,restored['bb'].global_state,atol=0,rtol=0)
+        query=torch.where(obs.target_residues)[0]
+        a=reference.predictor(original,protein.seq_pos,'bb',query)
+        b=rebuilt.predictor(restored,protein.seq_pos,'bb',query)
+    assert_fiber_close(a.nodes,b.nodes,atol=0,rtol=0)
+    assert_fiber_close(a.global_state,b.global_state,atol=0,rtol=0)
     with pytest.raises(ValueError, match='cannot resume'):
         train(old_cfg, training, dataset, tmp_path/'r', resume=path)
+
+
+@pytest.mark.parametrize('mode',['mean','learned'])
+def test_global_transport_equivariance_isolation_and_zero_gate(mode):
+    from protein_jepa.models.fibers import GlobalTransport
+    d=FiberDims(8,4,2)
+    h=random_fiber(7,d);r=random_rotation();batch=torch.tensor([0,0,0,1,1,1,1])
+    layer=GlobalTransport(d,mode)
+    out=layer(h,batch,2)
+    assert_fiber_close(out.rotate(r),layer(h.rotate(r),batch,2))
+    changed=Fiber(h.s.clone(),h.v.clone(),h.t.clone())
+    changed.s[3:]+=10;changed.v[3:]*=20;changed.t[3:]*=20
+    assert_fiber_close(out.index(slice(0,3)),layer(changed,batch,2).index(slice(0,3)),atol=0,rtol=0)
+    assert not torch.equal(out.s,h.s)
+    zero=Fiber.zeros(7,d,h.s);zero.s=h.s
+    no_geometry=layer(zero,batch,2)
+    assert no_geometry.v.count_nonzero()==no_geometry.t.count_nonzero()==0
+    sum(x.square().mean() for x in (out.s,out.v,out.t)).backward()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in layer.parameters())
+    with torch.no_grad():
+        layer.scale.zero_()
+    assert_fiber_close(layer(h,batch,2),h,atol=0,rtol=0)
+
+
+@pytest.mark.parametrize('mode',['mean','learned'])
+def test_encoder_global_zero_gate_recovers_existing_model(tiny_cfg,protein,mode):
+    from protein_jepa.models.jepa import ProteinJEPA
+    from protein_jepa.models.fibers import GlobalTransport
+    reference=ProteinJEPA(tiny_cfg).eval()
+    extended=ProteinJEPA(replace(tiny_cfg,encoder_global_transport=mode)).eval()
+    extended.load_state_dict(reference.state_dict(),strict=False)
+    with torch.no_grad():
+        for block in extended.modules():
+            if isinstance(block,GlobalTransport):
+                block.scale.zero_()
+        a=reference.online.encoder(protein,('bb','sc','aa'))
+        b=extended.online.encoder(protein,('bb','sc','aa'))
+    for view in a:
+        assert_fiber_close(a[view].nodes,b[view].nodes,atol=0,rtol=0)
+        assert_fiber_close(a[view].global_state,b[view].global_state,atol=0,rtol=0)
+
+
+def test_mean_transport_matches_uniform_attention_with_shared_projection():
+    from protein_jepa.models.fibers import GlobalTransport
+    d=FiberDims(8,4,2)
+    h=random_fiber(7,d);batch=torch.tensor([0,0,0,1,1,1,1])
+    mean=GlobalTransport(d,'mean')
+    learned=GlobalTransport(d,'learned')
+    learned.load_state_dict(mean.state_dict(),strict=False)
+    with torch.no_grad():
+        for parameter in learned.readout.score.parameters():
+            parameter.zero_()
+    assert_fiber_close(mean(h,batch,2),learned(h,batch,2))
+
+
+def test_checkpoint_before_shape_option_restores_sc_aa_and_resumes_without_shape(tiny_cfg,tmp_path):
+    from protein_jepa.config import model_config
+    cfg=replace(tiny_cfg,sc_shape_features=False)
+    training=TrainConfig(steps=2,batch_size=1,crop_lengths=[10],threads=1)
+    dataset=SyntheticDataset(2,12,17)
+    train(cfg,training,dataset,tmp_path/'r',stop_after=1)
+    path=tmp_path/'r/last.pt';payload=load_checkpoint(path)
+    reference=ProteinJEPA(cfg).eval();reference.load_state_dict(payload['model'])
+    payload['model_config'].pop('sc_shape_features')
+    torch.save(payload,path)
+    stored=load_checkpoint(path)
+    rebuilt=ProteinJEPA(model_config(stored['model_config'])).eval()
+    rebuilt.load_state_dict(stored['model'])
+    assert not rebuilt.cfg.sc_shape_features
+    with torch.no_grad():
+        a=reference.online.encoder(dataset[0],('sc','aa'))
+        b=rebuilt.online.encoder(dataset[0],('sc','aa'))
+    for view in a:
+        assert_fiber_close(a[view].nodes,b[view].nodes,atol=0,rtol=0)
+        assert_fiber_close(a[view].global_state,b[view].global_state,atol=0,rtol=0)
+        assert_fiber_close(a[view].atoms,b[view].atoms,atol=0,rtol=0)
+    with pytest.raises(ValueError,match='model configuration'):
+        train(tiny_cfg,training,dataset,tmp_path/'bad',resume=path)
+    assert train(cfg,training,dataset,tmp_path/'r',resume=path)['steps']==2

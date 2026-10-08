@@ -1,5 +1,6 @@
 """Online encoder, EMA teacher encoder and JEPA predictor. No coordinate reconstruction."""
 from copy import deepcopy
+from dataclasses import replace
 import torch
 from torch import nn, Tensor
 from ..config import ModelConfig, TrainConfig
@@ -50,7 +51,8 @@ def symmetric_atom_loss(pred, target, target_residue, target_slot, residues, slo
                    < torch.zeros(n, device=same.device).index_add_(0, residues, same.detach()))[residues]
     loss = torch.where(flipped, flip, same)
     valid = torch.where(flipped, found_flip, found)
-    return segment_mean(loss[valid], segment[valid], size)[0]+pred.s.sum()*0
+    average, count = segment_mean(loss[valid], segment[valid], size)
+    return average+pred.s.sum()*0, count
 
 
 @torch.no_grad()
@@ -95,6 +97,7 @@ class TargetStack(nn.Module):
     """
     def __init__(self, cfg):
         super().__init__()
+        self.global_only = cfg.global_latent_types == "sem_eq"
         self.encoder = MultiViewEncoder(cfg)
         typed = cfg.latent_typing == "typed"
         self.heads = nn.ModuleDict({v: TypedLatentHead(cfg.dims, latent_spec(cfg, v), typed,
@@ -105,7 +108,7 @@ class TargetStack(nn.Module):
         for name, view in encoded.items():
             index = torch.where(view.node_valid)[0]
             nodes = self.heads[name](view.nodes.index(index))
-            out[name] = ContextLatent(nodes, index, self.heads[name](view.global_state),
+            out[name] = ContextLatent(nodes, index, self.heads[name](view.global_state, self.global_only),
                                       view.global_valid)
         return out
 
@@ -143,7 +146,7 @@ class ProteinJEPA(nn.Module):
         return self.sample_losses([(record, observation)], train_cfg)[0]
 
     def sample_losses(self, records_and_observations, train_cfg: TrainConfig,
-                      group_size: int | None = None) -> list[tuple]:
+                      group_size: int | None = None, context_control: str = 'none') -> list[tuple]:
         """Per-sample (loss, info, regularizer inputs) in input order.
 
         Samples of the same task share context/target views, so each task's
@@ -158,15 +161,21 @@ class ProteinJEPA(nn.Module):
             for start in range(0, len(members), step):
                 chunk = members[start:start+step]
                 results = self.group_loss([records_and_observations[i][0] for i in chunk],
-                                          [records_and_observations[i][1] for i in chunk], train_cfg)
+                                          [records_and_observations[i][1] for i in chunk], train_cfg,
+                                          context_control)
                 for i, result in zip(chunk, results):
                     out[i] = result
         return out
 
-    def group_loss(self, records, observations, train_cfg: TrainConfig) -> list[tuple]:
+    def group_loss(self, records, observations, train_cfg: TrainConfig,
+                   context_control: str = 'none') -> list[tuple]:
         """Samples of ONE task as a packed batch; per-record statistics,
         losses and diagnostics equal the separate per-sample computation."""
         spec = observations[0].spec
+        if context_control not in {'none', 'position_mask_only'}:
+            raise ValueError('Unknown context control.')
+        if context_control != 'none' and self.training:
+            raise ValueError('Context-removal controls are evaluation-only.')
         if any(o.task_name != observations[0].task_name for o in observations):
             raise ValueError("A group holds one task.")
         typed = self.cfg.latent_typing == "typed"
@@ -176,11 +185,16 @@ class ProteinJEPA(nn.Module):
         seq_visible = torch.cat([o.seq_visible for o in observations])
         target_residues = torch.cat([o.target_residues for o in observations])
         context = self.context_latents(batch, spec.context, atom_visible, seq_visible)
+        if context_control == 'position_mask_only':
+            def blank(z):
+                return type(z)(*(torch.zeros_like(x) for x in z.tensors()))
+            context = {name: replace(z, nodes=blank(z.nodes), global_state=blank(z.global_state))
+                       for name, z in context.items()}
         with torch.no_grad():
             target = self.teacher.encoder(batch, (spec.target,))[spec.target]
             head = self.teacher.heads[spec.target]
             target_nodes_raw = head(target.nodes)
-            target_global_raw = head(target.global_state)
+            target_global_raw = head(target.global_state, self.teacher.global_only)
         # Mask tokens sit at the OBSERVATION's target residues and atom tokens
         # follow the visible-sequence topology; teacher validity/presence only
         # filters the loss, so hidden atom presence never shapes any query.
@@ -215,13 +229,14 @@ class ProteinJEPA(nn.Module):
                                         target.global_valid & observed, spec.equivariant, typed,
                                         kinds=('sem', 'eq'), segment=every, size=size)
         atom_loss = node_loss*0
+        atom_count = torch.zeros_like(node_loss)
         if atom_residues is not None and len(atom_residues) and len(target.atom_residue):
             # Topology queries meet observed teacher atoms by (residue, slot), up
             # to the residue's symmetric renaming.
             with torch.no_grad():
                 atom_target = make_target(target.atoms, None, floor, instance=True,
                                           batch=owner[target.atom_residue], size=size)
-            atom_loss = symmetric_atom_loss(prediction.atoms, atom_target, target.atom_residue,
+            atom_loss, atom_count = symmetric_atom_loss(prediction.atoms, atom_target, target.atom_residue,
                                             target.atom_slot, atom_residues, atom_slots, batch.seq,
                                             owner[atom_residues], size)
         loss = node_loss + train_cfg.global_weight*global_loss + train_cfg.atom_weight*atom_loss
@@ -242,16 +257,17 @@ class ProteinJEPA(nn.Module):
         names = list(terms)
         table = torch.stack([terms[k].detach() for k in names]+[counts[k] for k in names]+[
             node_loss.detach(), global_loss.detach(), atom_loss.detach(), top1, retrieved.float(),
-            low]).T.tolist()
+            low, atom_count]).T.tolist()
         results = []
         k = len(names)
         for b, row in enumerate(table):
-            info = {"valid_targets": int(row[k+names.index('sem')])}
+            info = {"valid_targets": int(row[k+names.index('sem')]),
+                    "valid_targets_by_kind": {name: int(row[k+i]) for i, name in enumerate(names)}}
             if info["valid_targets"]:
                 info.update({name: row[i] for i, name in enumerate(names) if row[k+i] > 0})
-            node, glob, atom, hit, n, low_b = row[2*k:]
+            node, glob, atom, hit, n, low_b, atoms_b = row[2*k:]
             info.update(target_low_rms=low_b, task=observations[b].task_name, node_loss=node,
-                        global_loss=glob, atom_loss=atom)
+                        global_loss=glob, atom_loss=atom, valid_atom_targets=int(atoms_b))
             if n >= 2:
                 info.update(node_top1=hit, node_chance=1/n)
             results.append((loss[b], info, regularizer_inputs[b]))

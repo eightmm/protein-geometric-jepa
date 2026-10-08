@@ -2,7 +2,6 @@
 from dataclasses import dataclass
 import torch
 from torch import Tensor
-from .records import ProteinRecord
 from .batch import padded_layout
 from .constants import AA3, ATOM_ID, N_ATOMS, SC_BONDS
 from ..geometry.primitives import normalize

@@ -11,6 +11,11 @@ from ..data.constants import AA3, CHI, PI_PERIODIC, ATOM_ID
 from .primitives import angle, dihedral, normalize, local_frame, circular_encode
 
 
+# Named atom windows for phi, psi, incoming omega and CA pseudo-dihedral.
+_BB_OFFSETS = torch.tensor([[-1, 0, 0, 0], [0, 0, 0, 1], [-1, -1, 0, 0], [-1, 0, 1, 2]])
+_BB_SLOTS = torch.tensor([[2, 0, 1, 2], [0, 1, 2, 0], [1, 2, 0, 1], [1, 1, 1, 1]])
+
+
 @dataclass
 class BackboneFeatures:
     internal: Tensor        # [L, 18]: cos/sin 4 periodic; angle cos/sin; 6 masks; 2 lengths
@@ -33,8 +38,17 @@ def backbone_features(record: ProteinRecord, visible: Tensor | None = None) -> B
     x = torch.where(seen[..., None], x, torch.zeros_like(x))
     nres = len(record)
     device = x.device
-    tors = x.new_zeros(nres, 4)
-    tv = torch.zeros(nres, 4, dtype=torch.bool, device=device)
+    rows = torch.arange(nres, device=device)[:, None, None] + _BB_OFFSETS.to(device)
+    in_bounds = (rows >= 0) & (rows < nres)
+    rows = rows.clamp(0, nres-1)
+    slots = _BB_SLOTS.to(device)
+    points = x[rows, slots]
+    tors, tv = dihedral(*points.unbind(-2))
+    links = torch.nn.functional.pad(record.peptide, (1, 2))
+    before, after, following = links[:nres], links[1:nres+1], links[2:nres+2]
+    connected = torch.stack((before, after, before, before & after & following), -1)
+    tv &= (in_bounds & seen[rows, slots]).all(-1) & connected
+    tors = torch.where(tv, tors, torch.zeros_like(tors))
     ca_ang = x.new_zeros(nres)
     av = torch.zeros(nres, dtype=torch.bool, device=device)
     dirs = x.new_zeros(nres, 9, 3)
@@ -42,20 +56,8 @@ def backbone_features(record: ProteinRecord, visible: Tensor | None = None) -> B
     lengths = x.new_zeros(nres, 2)
     ca = x[:, 1]
 
-    def set_tors(slot, rows, points, dependency):
-        value, valid = dihedral(*points)
-        valid &= dependency
-        tors[rows, slot] = torch.where(valid, value, torch.zeros_like(value))
-        tv[rows, slot] = valid
-
     if nres > 1:
         bond = record.peptide
-        set_tors(0, slice(1, None), (x[:-1, 2], x[1:, 0], ca[1:], x[1:, 2]),
-                 bond & seen[:-1, 2] & seen[1:, :3].all(-1))
-        set_tors(1, slice(None, -1), (x[:-1, 0], ca[:-1], x[:-1, 2], x[1:, 0]),
-                 bond & seen[:-1, :3].all(-1) & seen[1:, 0])
-        set_tors(2, slice(1, None), (ca[:-1], x[:-1, 2], x[1:, 0], ca[1:]),
-                 bond & seen[:-1, 1:3].all(-1) & seen[1:, :2].all(-1))
         direction, valid = normalize(ca[1:] - ca[:-1])
         valid &= bond & seen[:-1, 1] & seen[1:, 1]
         direction = torch.where(valid[:, None], direction, torch.zeros_like(direction))
@@ -69,15 +71,10 @@ def backbone_features(record: ProteinRecord, visible: Tensor | None = None) -> B
                   & record.peptide[:-1] & record.peptide[1:])
         ca_ang[1:-1] = torch.where(valid, values, torch.zeros_like(values))
         av[1:-1] = valid
-    if nres > 3:
-        set_tors(3, slice(1, -2), (ca[:-3], ca[1:-2], ca[2:-1], ca[3:]),
-                 seen[:-3, 1] & seen[1:-2, 1] & seen[2:-1, 1] & seen[3:, 1]
-                 & record.peptide[:-2] & record.peptide[1:-1] & record.peptide[2:])
-    for slot, (a, b) in enumerate(((0, 1), (1, 2), (2, 3)), start=2):
-        v, valid = normalize(x[:, b]-x[:, a])
-        valid &= seen[:, a] & seen[:, b]
-        dirs[:, slot] = torch.where(valid[:, None], v, torch.zeros_like(v))
-        dv[:, slot] = valid
+    v, valid = normalize(x[:, 1:4]-x[:, :3])
+    valid &= seen[:, :3] & seen[:, 1:4]
+    dirs[:, 2:5] = torch.where(valid[..., None], v, torch.zeros_like(v))
+    dv[:, 2:5] = valid
     # One virtual-CB rule for every residue, including glycine; no identity lookup.
     b, c = ca-x[:, 0], x[:, 2]-ca
     vcb = -0.58273431*torch.linalg.cross(b, c) + 0.56802827*b - 0.54067466*c
@@ -95,6 +92,40 @@ def backbone_features(record: ProteinRecord, visible: Tensor | None = None) -> B
     internal = torch.cat((enc.flatten(1), caenc, tv.float(), av[:, None].float(),
                           seen[:, 1:2].float(), lengths / 4.0), dim=-1)
     return BackboneFeatures(internal, enc, tv, ca_ang, av, dirs, dv, frames, fm, seen)
+
+
+@dataclass
+class SidechainShapeFeatures:
+    offset: Tensor           # [L,3] observed SC centroid minus observed CA
+    covariance: Tensor       # [L,3,3] population covariance about the SC centroid
+    valid: Tensor            # [L] at least one observed SC atom
+    anchor_valid: Tensor     # [L] both SC centroid and CA observed
+
+
+def sidechain_shape_features(record: ProteinRecord, visible: Tensor | None = None) -> SidechainShapeFeatures:
+    """Unweighted visible SC moments, independent of atom naming and identity.
+
+    No CA fallback stands in for an unobserved SC. Covariance needs only SC;
+    centroid offset additionally needs CA. A nearby origin limits cancellation.
+    """
+    seen = record.present.clone()
+    if visible is not None:
+        seen &= visible
+    sc = seen[:, 4:].clone()
+    sc[:, ATOM_ID['OXT']-4] = False
+    count = sc.sum(-1)
+    valid = count > 0
+    anchor_valid = valid & seen[:, 1]
+    x = record.xyz[:, 4:].float()
+    first = x[torch.arange(len(record), device=x.device), sc.long().argmax(-1)]
+    origin = torch.where(seen[:, 1, None], record.xyz[:, 1], first)
+    origin = torch.where(valid[:, None], origin, torch.zeros_like(origin))
+    relative = torch.where(sc[..., None], x-origin[:, None], torch.zeros_like(x))
+    mean = relative.sum(1)/count.clamp_min(1)[:, None]
+    centered = torch.where(sc[..., None], relative-mean[:, None], torch.zeros_like(relative))
+    covariance = (centered.transpose(1, 2) @ centered)/count.clamp_min(1)[:, None, None]
+    offset = torch.where(anchor_valid[:, None], mean, torch.zeros_like(mean))
+    return SidechainShapeFeatures(offset, covariance, valid, anchor_valid)
 
 
 @dataclass

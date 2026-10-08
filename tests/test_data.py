@@ -4,7 +4,7 @@ import json
 import pytest
 import torch
 from protein_jepa.data.records import ProteinRecord
-from protein_jepa.data.io import from_atoms, from_plmol_parser, read_structure
+from protein_jepa.data.io import from_atoms, from_plmol_parser
 from protein_jepa.data.dataset import ManifestDataset
 from protein_jepa.data.constants import AA3, ATOMS
 from protein_jepa.data.graphs import residue_graph
@@ -92,6 +92,33 @@ def test_manifest_refuses_unverified_sequence_positions(protein,tmp_path):
     with pytest.raises(ValueError,match='Canonical'):
         data[0]
     assert len(ManifestDataset(path,allow_observed_order=True)[0])==len(rec)
+
+
+def test_content_audit_catches_duplicates_with_different_paths_and_clusters(protein,tmp_path):
+    protein.save(tmp_path/'a.npz')
+    replace(protein,record_id='renamed',xyz=protein.xyz+10).save(tmp_path/'b.npz')
+    rows=[dict(path='a.npz',split='train',cluster_id='a'),
+          dict(path='b.npz',split='val',cluster_id='b')]
+    manifest=tmp_path/'manifest.jsonl'
+    manifest.write_text('\n'.join(json.dumps(r) for r in rows))
+    report=ManifestDataset(manifest).audit_content()
+    assert not report['passed'] and any(i['kind']=='sequence' for i in report['issues'])
+
+
+def test_identity_screen_reports_threshold_and_incomplete_coverage(protein,tmp_path):
+    rows=[]
+    for i,split in enumerate(('train','val','test')):
+        seq=protein.seq.clone();seq[0]=(seq[0]+i)%20
+        replace(protein,seq=seq).save(tmp_path/f'{i}.npz')
+        rows.append(dict(path=f'{i}.npz',split=split,cluster_id=str(i)))
+    manifest=tmp_path/'manifest.jsonl'
+    manifest.write_text('\n'.join(json.dumps(r) for r in rows))
+    data=ManifestDataset(manifest)
+    assert data.audit_content()['passed']
+    report=data.audit_content(min_identity=.8,max_pairs=1)
+    assert report['pairs_checked']==1 and report['pairs_eligible']==3
+    assert not report['complete'] and not report['passed']
+    assert any(i['kind']=='sequence_identity' and i['identity']>=.8 for i in report['issues'])
 
 
 def test_graph_signed_polymer_edges_and_visibility(protein):

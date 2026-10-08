@@ -69,6 +69,9 @@ def main(argv=None):
     encode.add_argument('--output', required=True)
     audit = commands.add_parser('audit-manifest')
     audit.add_argument('manifest')
+    audit.add_argument('--content', action='store_true', help='Read records and check cross-split duplicates.')
+    audit.add_argument('--min-identity', type=float, help='Optional bounded global sequence-identity screen.')
+    audit.add_argument('--max-pairs', type=int, default=10000)
     ev = commands.add_parser('evaluate')
     ev.add_argument('--checkpoint', required=True)
     ev.add_argument('--manifest', required=True)
@@ -76,6 +79,9 @@ def main(argv=None):
     ev.add_argument('--max-records', type=int, default=32)
     ev.add_argument('--device', default='cpu')
     ev.add_argument('--output', required=True)
+    ev.add_argument('--controls', action='store_true', help='Also evaluate the position/mask-only control.')
+    ev.add_argument('--audit-content', action='store_true', help='Audit all manifest records before evaluation.')
+    ev.add_argument('--gradients', action='store_true', help='One eval-mode gradient probe pair per task.')
     args = parser.parse_args(argv)
     if args.command == 'prepare':
         path = Path(args.output)
@@ -115,11 +121,18 @@ def main(argv=None):
                                                  'loss_ratio')}))
     elif args.command == 'audit-manifest':
         dataset = ManifestDataset(args.manifest)
+        if args.content or args.min_identity is not None:
+            report = dataset.audit_content(args.min_identity, args.max_pairs)
+            print(json.dumps(report))
+            if not report['passed']:
+                raise ValueError('Cross-split content audit failed or identity screen is incomplete.')
+            return
         print(json.dumps({'train_records': len(dataset), 'fingerprint': dataset.fingerprint,
                           'audit': 'declared cluster/path split consistency; NOT sequence clustering'}))
     elif args.command == 'evaluate':
         from .evaluate import evaluate
-        result = evaluate(args.checkpoint, args.manifest, args.output, args.split, args.max_records, args.device)
+        result = evaluate(args.checkpoint, args.manifest, args.output, args.split, args.max_records,
+                          args.device, args.controls, args.audit_content, args.gradients)
         print(json.dumps(result))
     elif args.command == 'encode':
         torch.set_num_threads(2)

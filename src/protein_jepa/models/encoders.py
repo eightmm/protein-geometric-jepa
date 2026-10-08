@@ -9,10 +9,10 @@ from ..data.records import ProteinRecord
 from ..data.batch import RecordBatch, pack, padded_layout, to_padded
 from ..data.graphs import (atom_bonds, make_graph, residue_graph, frame_pair_features,
                            BB_ATOM, SC_ATOM, PAIR_FEATURES)
-from ..geometry.features import backbone_features, chi_features
-from ..geometry.primitives import normalize
+from ..geometry.features import backbone_features, chi_features, sidechain_shape_features
+from ..geometry.primitives import normalize, local_frame, symmetric_traceless
 from .fibers import (Fiber, FiberDims, FiberLinear, DirectionSeed,
-                     GlobalReadout, scatter_fiber, cat_fibers)
+                     GlobalReadout, GlobalTransport, scatter_fiber, cat_fibers)
 from .equivariant import EquivariantBlock
 
 
@@ -33,11 +33,11 @@ def interaction_block(cfg: ModelConfig, stage: int, cutoff: float):
     )
 
 
-def residue_pair_graph(cfg: ModelConfig, record, valid: Tensor, visible: Tensor):
+def residue_pair_graph(cfg: ModelConfig, record, valid: Tensor, visible: Tensor, backbone=None):
     """Residue graph over valid residues, with frame pair features when enabled."""
     ids, graph = residue_graph(record, valid, cfg.radius_residue, cfg.max_neighbors)
     if cfg.pair_frame_features:
-        feat = backbone_features(record, visible)
+        feat = backbone_features(record, visible) if backbone is None else backbone
         graph.pair = frame_pair_features(feat.frames, feat.frame_valid, record.xyz[:, 1].float(),
                                          ids, graph)
     return ids, graph
@@ -124,13 +124,13 @@ class InternalEncoder(nn.Module):
         self.transformer = nn.TransformerEncoder(layer, cfg.internal_layers, enable_nested_tensor=False)
         self.out = nn.Linear(cfg.sequence_width, cfg.scalar)
 
-    def forward(self, record, atom_visible, node_visible=None):
+    def forward(self, record, atom_visible, node_visible=None, backbone=None):
         if self.sidechain:
             feat = chi_features(record, atom_visible, self.cfg.include_chi5)
             x = torch.cat((feat.encoded.flatten(1), feat.defined.float(), feat.valid.float()), -1)
             valid = feat.valid.any(-1)
         else:
-            feat = backbone_features(record, atom_visible)
+            feat = backbone_features(record, atom_visible) if backbone is None else backbone
             x = feat.internal
             valid = feat.periodic_valid.any(-1) | feat.ca_angle_valid
         if node_visible is not None:
@@ -162,7 +162,7 @@ class AtomStem(nn.Module):
             self.local_embed = nn.Sequential(nn.Linear(4, cfg.scalar), nn.SiLU(),
                                              nn.Linear(cfg.scalar, cfg.scalar))
 
-    def forward(self, record: RecordBatch, visible: Tensor):
+    def forward(self, record: RecordBatch, visible: Tensor, backbone=None):
         mask = visible & record.present
         selector = torch.zeros_like(mask)
         if self.backbone_only:
@@ -184,9 +184,15 @@ class AtomStem(nn.Module):
             s = self.embedding(token)+self.distance_embed(rel.norm(dim=-1, keepdim=True)/4)
             if self.local_frame:
                 # Position in the residue's visible N-CA-C frame (zero without one).
-                feat = backbone_features(record, visible)
-                ok = feat.frame_valid[ri]
-                local = (feat.frames[ri].transpose(-1, -2) @ rel[..., None])[..., 0]/4
+                if backbone is None:
+                    seen = (visible & record.present)[:, :3]
+                    xyz = torch.where(seen[..., None], record.xyz[:, :3], 0)
+                    frames, frame_valid = local_frame(*xyz.unbind(1))
+                    frame_valid &= seen.all(-1)
+                else:
+                    frames, frame_valid = backbone.frames, backbone.frame_valid
+                ok = frame_valid[ri]
+                local = (frames[ri].transpose(-1, -2) @ rel[..., None])[..., 0]/4
                 s = s+self.local_embed(torch.cat((local, torch.ones_like(local[:, :1])), -1)
                                        * ok[:, None].to(local.dtype))
             atom = self.seed(s, unit[:, None])
@@ -215,18 +221,23 @@ class BackboneEncoder(nn.Module):
         self.seed = DirectionSeed(9, cfg.dims)
         self.layers = nn.ModuleList(interaction_block(cfg, 2, cfg.radius_residue)
                                     for _ in range(cfg.backbone_layers))
+        self.global_layers = nn.ModuleList(
+            GlobalTransport(cfg.dims, cfg.encoder_global_transport)
+            for _ in self.layers if cfg.encoder_global_transport != 'none')
         self.atom_feedback = FiberLinear(cfg.dims, cfg.dims)
         self.readout = GlobalReadout(cfg.dims)
 
-    def forward(self, record, visible):
-        feat = backbone_features(record, visible)
+    def forward(self, record, visible, backbone=None):
+        feat = backbone_features(record, visible) if backbone is None else backbone
         atoms, nodes, valid, ri, ai = self.atom_stem(record, visible)
         nodes = nodes + self.seed(self.internal_stem(feat.internal), feat.directions)
         valid &= feat.visible[:, 1]
-        ids, graph = residue_pair_graph(self.cfg, record, valid, visible)
+        ids, graph = residue_pair_graph(self.cfg, record, valid, visible, feat)
         h = nodes.index(ids)
-        for layer in self.layers:
+        for i, layer in enumerate(self.layers):
             h = layer(h, graph)
+            if self.global_layers:
+                h = self.global_layers[i](h, record.batch[ids], record.size)
         nodes = scatter_fiber(h, ids, len(record), mean=False)
         atoms = atoms + self.atom_feedback(nodes.index(ri))
         return EncodedView(nodes, valid, self.readout(nodes, valid, record.batch, record.size),
@@ -237,10 +248,26 @@ class SidechainEncoder(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         self.stem = AtomStem(cfg, backbone_only=False)
+        self.shape_map = (FiberLinear(FiberDims(4, 1, 1), cfg.dims, scalar_bias=False)
+                          if cfg.sc_shape_features else None)
         self.readout = GlobalReadout(cfg.dims)
+        self.global_transport = (GlobalTransport(cfg.dims, cfg.encoder_global_transport)
+                                 if cfg.encoder_global_transport != 'none' else None)
 
-    def forward(self, record, visible):
-        atoms, nodes, valid, ri, ai = self.stem(record, visible)
+    def forward(self, record, visible, backbone=None):
+        atoms, nodes, valid, ri, ai = self.stem(record, visible, backbone)
+        if self.shape_map is not None:
+            feat = sidechain_shape_features(record, visible)
+            radius2 = feat.covariance.diagonal(dim1=-2, dim2=-1).sum(-1)/16
+            scalar = torch.stack((feat.offset.norm(dim=-1)/4, radius2,
+                                  feat.valid.float(), feat.anchor_valid.float()), -1)
+            shape = Fiber(scalar, feat.offset[:, None]/4,
+                          symmetric_traceless(feat.covariance)[:, None]/16)
+            nodes = nodes + self.shape_map(shape).scale(0.1)
+        if self.global_transport is not None:
+            ids = torch.where(valid)[0]
+            h = self.global_transport(nodes.index(ids), record.batch[ids], record.size)
+            nodes = scatter_fiber(h, ids, len(record), mean=False)
         return EncodedView(nodes, valid, self.readout(nodes, valid, record.batch, record.size),
                            any_per_record(valid, record.batch, record.size), atoms, ri, ai)
 
@@ -252,10 +279,12 @@ class AllAtomFusion(nn.Module):
         self.bb_map, self.sc_map = FiberLinear(cfg.dims, cfg.dims), FiberLinear(cfg.dims, cfg.dims)
         self.atom_layers = nn.ModuleList(interaction_block(cfg, 3, cfg.radius_atom) for _ in range(cfg.aa_layers))
         self.res_layer = interaction_block(cfg, 4, cfg.radius_residue)
+        self.global_transport = (GlobalTransport(cfg.dims, cfg.encoder_global_transport)
+                                 if cfg.encoder_global_transport != 'none' else None)
         self.feedback = FiberLinear(cfg.dims, cfg.dims)
         self.readout = GlobalReadout(cfg.dims)
 
-    def forward(self, record, visible, bb: EncodedView, sc: EncodedView):
+    def forward(self, record, visible, bb: EncodedView, sc: EncodedView, backbone=None):
         # No writes to bb/sc tensors: the clean BB output survives fusion unchanged.
         initial = self.bb_map(bb.nodes) + self.sc_map(sc.nodes)
         ri = torch.cat((bb.atom_residue, sc.atom_residue))
@@ -269,8 +298,10 @@ class AllAtomFusion(nn.Module):
             atom = layer(atom, graph)
         nodes = scatter_fiber(atom, ri, len(record)) + initial
         valid = (bb.node_valid | sc.node_valid) & visible[:, 1] & record.present[:, 1]
-        ids, graph = residue_pair_graph(self.cfg, record, valid, visible)
+        ids, graph = residue_pair_graph(self.cfg, record, valid, visible, backbone)
         h = self.res_layer(nodes.index(ids), graph)
+        if self.global_transport is not None:
+            h = self.global_transport(h, record.batch[ids], record.size)
         nodes = scatter_fiber(h, ids, len(record), mean=False)
         # Atom output = state after the inter-residue atom layers, which also
         # feeds the residue output. A post-hoc residue->atom map would exist
@@ -301,17 +332,21 @@ class MultiViewEncoder(nn.Module):
             raise ValueError(f"Unknown views: {set(views)-allowed}")
         atom_visible = record.present.clone() if atom_visible is None else atom_visible & record.present
         seq_visible = (record.seq < 20) if seq_visible is None else seq_visible & (record.seq < 20)
+        # Shared only within this call and observation mask; a later task or
+        # teacher forward recomputes its own geometry.
+        backbone = (backbone_features(record, atom_visible)
+                    if set(views) & {'bb', 'aa', 'bb_internal'} else None)
         out = {}
         if "seq" in views:
             out['seq'] = self.seq(record, seq_visible)
         if "bb" in views or "aa" in views:
-            out['bb'] = self.bb(record, atom_visible)
+            out['bb'] = self.bb(record, atom_visible, backbone)
         if "sc" in views or "aa" in views:
-            out['sc'] = self.sc(record, atom_visible)
+            out['sc'] = self.sc(record, atom_visible, backbone)
         if "aa" in views:
-            out['aa'] = self.aa(record, atom_visible, out['bb'], out['sc'])
+            out['aa'] = self.aa(record, atom_visible, out['bb'], out['sc'], backbone)
         if "bb_internal" in views:
-            out['bb_internal'] = self.bb_internal(record, atom_visible, internal_visible)
+            out['bb_internal'] = self.bb_internal(record, atom_visible, internal_visible, backbone)
         if "chi" in views:
             out['chi'] = self.chi(record, atom_visible, internal_visible)
         # Only explicitly allowed observation paths are returned to the predictor.

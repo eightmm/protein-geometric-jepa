@@ -1,6 +1,7 @@
 from dataclasses import replace
 import pytest
 import torch
+from conftest import assert_fiber_close
 from protein_jepa.config import TrainConfig
 from protein_jepa.objectives.tasks import TASKS, make_observation
 from protein_jepa.objectives.losses import latent_distance
@@ -32,12 +33,16 @@ def test_all_encoder_paths_receive_gradients_across_tasks(model,protein):
         assert any(p.grad is not None and bool(p.grad.abs().sum()) for p in module.parameters()),view
 
 
-def test_every_teacher_target_parameter_is_trained_online(model,protein):
+@pytest.mark.parametrize('transport',['none','mean','learned'])
+def test_every_teacher_target_parameter_is_trained_online(model,protein,transport):
     """JEPA invariant: the EMA teacher may only use weights the student trains.
 
     One optimizer step first wakes zero-initialized gates, so only permanently
     dead target-path weights (e.g. a never-consumed online branch) fail.
     """
+    if transport != 'none':
+        from protein_jepa.models.jepa import ProteinJEPA
+        model=ProteinJEPA(replace(model.cfg,encoder_global_transport=transport))
     model.train()
     # Adam moves every touched weight by ~lr, so zero-initialized gates wake up.
     optimizer=torch.optim.Adam([p for p in model.parameters() if p.requires_grad],lr=1e-2)
@@ -159,10 +164,14 @@ def test_overfit_patience_stops_a_plateaued_run(tiny_cfg):
     assert result['converged_at_step']==4 and result['history'][-1]['step']==4
 
 
+@pytest.mark.parametrize('transport',['none','mean','learned'])
 @pytest.mark.parametrize('task',list(TASKS))
-def test_packed_group_equals_separate_samples(model,task):
+def test_packed_group_equals_separate_samples(model,task,transport):
     """Packing records of different lengths must not mix them: per-record
     losses and diagnostics equal the one-record computation."""
+    if transport != 'none':
+        from protein_jepa.models.jepa import ProteinJEPA
+        model=ProteinJEPA(replace(model.cfg,encoder_global_transport=transport)).eval()
     from protein_jepa.data.synthetic import synthetic_record, sequence_record
     # sequence_record has no coordinates: structural contexts are empty and
     # its predictions collapse, which retrieval must score identically.
@@ -275,3 +284,40 @@ def test_symmetric_atom_naming_is_not_a_learnable_difference(model,task):
     assert info['atom_loss']>0
     assert abs(info['atom_loss']-other_info['atom_loss'])<=2e-5*(1+info['atom_loss'])
     torch.testing.assert_close(loss,other,atol=2e-5,rtol=2e-5)
+
+
+def test_gradient_diagnostics_preserve_training_state_and_gradients(model,protein):
+    from protein_jepa.evaluate import task_gradient_diagnostics
+    model.train()
+    parameter=next(p for p in model.parameters() if p.requires_grad)
+    parameter.grad=torch.ones_like(parameter)
+    before=parameter.grad.clone()
+    pairs=[(protein,make_observation(protein,t,.3,torch.Generator().manual_seed(2)))
+           for t in ('bb_infill','aa_infill')]
+    report=task_gradient_diagnostics(model,pairs,TrainConfig())
+    assert model.training and not model.teacher.training
+    torch.testing.assert_close(parameter.grad,before,atol=0,rtol=0)
+    assert all(p.grad is None for p in model.teacher.parameters())
+    assert all(v>0 for v in report['gradient_norm'].values())
+    cosine=torch.tensor(report['gradient_cosine'])
+    torch.testing.assert_close(cosine.diag(),torch.ones(2),atol=1e-5,rtol=0)
+
+
+def test_context_removal_control_ignores_sequence_content_but_retains_observation(model,protein):
+    changed=replace(protein,seq=(protein.seq+7)%20)
+    obs=make_observation(protein,'seq_to_bb',.3,torch.Generator().manual_seed(2))
+    predictions=[]
+    handle=model.predictor.register_forward_hook(lambda module,args,out: predictions.append(out))
+    try:
+        with torch.no_grad():
+            for control in ('none','position_mask_only'):
+                for record in (protein,changed):
+                    model.sample_losses([(record,obs)],TrainConfig(),context_control=control)
+    finally:
+        handle.remove()
+    assert not torch.equal(predictions[0].nodes.sem,predictions[1].nodes.sem)
+    assert_fiber_close(predictions[2].nodes,predictions[3].nodes,atol=0,rtol=0)
+    assert_fiber_close(predictions[2].global_state,predictions[3].global_state,atol=0,rtol=0)
+    model.train()
+    with pytest.raises(ValueError,match='evaluation-only'):
+        model.sample_losses([(protein,obs)],TrainConfig(),context_control='position_mask_only')

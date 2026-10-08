@@ -1,0 +1,187 @@
+{
+  "scope": "CPU synthetic/mathematical objective probes only; no optimization or held-out scientific evaluation.",
+  "source_sha256": "d94cffc50693bfa99abb4da46148dc7a511d679ed9f1d4f77f95892c35d3617e",
+  "task_decomposition": {
+    "seq_to_bb": {
+      "pretext_loss": 2.152585744857788,
+      "kinds": [
+        "sem",
+        "circ"
+      ],
+      "coverage": {
+        "sem": 24,
+        "circ": 24
+      },
+      "node_loss": 2.0402889251708984,
+      "global_loss": 1.122969150543213,
+      "atom_loss": 0.0
+    },
+    "bb_to_seq": {
+      "pretext_loss": 0.9926547408103943,
+      "kinds": [
+        "sem"
+      ],
+      "coverage": {
+        "sem": 24
+      },
+      "node_loss": 0.9124227166175842,
+      "global_loss": 0.8023202419281006,
+      "atom_loss": 0.0
+    },
+    "cart_to_internal": {
+      "pretext_loss": 1.8047128915786743,
+      "kinds": [
+        "sem",
+        "circ"
+      ],
+      "coverage": {
+        "sem": 24,
+        "circ": 24
+      },
+      "node_loss": 1.7173995971679688,
+      "global_loss": 0.87313312292099,
+      "atom_loss": 0.0
+    },
+    "internal_to_bb": {
+      "pretext_loss": 2.149298906326294,
+      "kinds": [
+        "sem",
+        "circ"
+      ],
+      "coverage": {
+        "sem": 24,
+        "circ": 24
+      },
+      "node_loss": 2.0369296073913574,
+      "global_loss": 1.123692512512207,
+      "atom_loss": 0.0
+    },
+    "sc_to_chi": {
+      "pretext_loss": 2.0416553020477295,
+      "kinds": [
+        "sem",
+        "circ"
+      ],
+      "coverage": {
+        "sem": 24,
+        "circ": 24
+      },
+      "node_loss": 1.9525752067565918,
+      "global_loss": 0.8908000588417053,
+      "atom_loss": 0.0
+    },
+    "chi_to_sc": {
+      "pretext_loss": 4.843148231506348,
+      "kinds": [
+        "sem",
+        "vector",
+        "tensor",
+        "circ"
+      ],
+      "coverage": {
+        "sem": 24,
+        "vector": 24,
+        "tensor": 24,
+        "circ": 24
+      },
+      "node_loss": 4.570542812347412,
+      "global_loss": 2.7260522842407227,
+      "atom_loss": 0.0
+    },
+    "sc_infill": {
+      "pretext_loss": 4.928178787231445,
+      "kinds": [
+        "sem",
+        "vector",
+        "tensor",
+        "circ"
+      ],
+      "coverage": {
+        "sem": 8,
+        "vector": 8,
+        "tensor": 8,
+        "circ": 8
+      },
+      "node_loss": 4.005554676055908,
+      "global_loss": 2.7286462783813477,
+      "atom_loss": 3.2487964630126953
+    },
+    "bb_infill": {
+      "pretext_loss": 4.083700656890869,
+      "kinds": [
+        "sem",
+        "vector",
+        "tensor",
+        "circ"
+      ],
+      "coverage": {
+        "sem": 8,
+        "vector": 8,
+        "tensor": 8,
+        "circ": 8
+      },
+      "node_loss": 3.7722840309143066,
+      "global_loss": 3.1141676902770996,
+      "atom_loss": 0.0
+    },
+    "aa_infill": {
+      "pretext_loss": 4.756807327270508,
+      "kinds": [
+        "sem",
+        "vector",
+        "tensor",
+        "circ"
+      ],
+      "coverage": {
+        "sem": 8,
+        "vector": 8,
+        "tensor": 8,
+        "circ": 8
+      },
+      "node_loss": 3.822401523590088,
+      "global_loss": 2.56173038482666,
+      "atom_loss": 3.3911631107330322
+    }
+  },
+  "microbatch_reduction": {
+    "tasks": [
+      "bb_infill",
+      "bb_infill",
+      "bb_to_seq",
+      "sc_to_chi"
+    ],
+    "single_batch_task_mean": 2.3726701736450195,
+    "two_microbatch_task_means": 2.8004276752471924,
+    "single_batch_coefficients": {
+      "bb_infill": 0.3333333333333333,
+      "bb_to_seq": 0.3333333333333333,
+      "sc_to_chi": 0.3333333333333333
+    },
+    "microbatch_coefficients": {
+      "bb_infill": 0.5,
+      "bb_to_seq": 0.25,
+      "sc_to_chi": 0.25
+    }
+  },
+  "circle_floor": {
+    "constant": 0.10000000149011612,
+    "balanced_antipodes": 0.0
+  },
+  "cartesian_loss_rotation": {
+    "component_l1_before": 1.0,
+    "component_l1_rotated": 1.4142135381698608,
+    "norm_l2_before": 1.0,
+    "norm_l2_rotated": 0.9999999403953552
+  },
+  "position_only_regularizer_counterexample": {
+    "definition": "32 positions, 8 Fourier frequencies, 16 scalar channels; identical for every protein.",
+    "variance_penalty": 0.0,
+    "covariance_penalty": 1.0076910416127391e-13,
+    "diagnostics": {
+      "regularizer_samples": 32,
+      "scalar_std": 0.7071067094802856,
+      "effective_rank": 16.0
+    },
+    "interpretation": "A mathematical counterexample, not evidence of a shortcut in the trained model."
+  }
+}

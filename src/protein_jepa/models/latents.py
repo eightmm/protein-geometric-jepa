@@ -133,9 +133,13 @@ class TypedLatentHead(nn.Module):
     def invariants(self, h: Fiber) -> Tensor:
         return torch.cat((h.invariant(), gram_invariants(h.v, self.gram)), -1)
 
-    def forward(self, h: Fiber) -> TypedLatent:
+    def forward(self, h: Fiber, global_only: bool = False) -> TypedLatent:
         n, s = len(h.s), self.spec
         inv = self.invariants(h)
+        if global_only:
+            return TypedLatent(self.sem(inv), self.eq_v(h.v), self.eq_t(h.t),
+                               h.s.new_zeros(n, 0, 2), h.s.new_zeros(n, 0, 3),
+                               h.s.new_zeros(n, 0, 3, 3), h.s.new_zeros(n, 0))
         circ = (self.circ(inv).view(n, s.circ, 2) if self.circ is not None
                 else h.s.new_zeros(n, 0, 2))
         vec = self.vec(h.v)

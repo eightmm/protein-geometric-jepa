@@ -6,7 +6,7 @@ benchmarks, force-field tests, or pretraining a useful protein model.
 import math
 import torch
 from .records import ProteinRecord
-from .constants import AA3, AA1, AA_TO_ID, ATOM_ID, N_ATOMS, SC_BONDS, UNK
+from .constants import AA3, AA1, ATOM_ID, N_ATOMS, SC_BONDS, UNK
 from ..geometry.primitives import normalize, local_frame
 
 

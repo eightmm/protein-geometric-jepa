@@ -6,7 +6,7 @@ reference layout is not confused with cuEquivariance's five-component basis.
 from dataclasses import dataclass
 import torch
 from torch import nn, Tensor
-from ..geometry.primitives import symmetric_traceless, outer_stf
+from ..geometry.primitives import outer_stf
 from ..data.batch import take
 
 
@@ -120,12 +120,12 @@ class DirectionSeed(nn.Module):
 
 
 class GlobalReadout(nn.Module):
-    """Invariant learned attention; l>0 is generated ONLY from input geometry."""
-    def __init__(self, dims: FiberDims):
+    """Invariant attention or mean; l>0 comes ONLY from input geometry."""
+    def __init__(self, dims: FiberDims, *, learned: bool = True):
         super().__init__()
         # No final bias: softmax is shift-invariant, so it could never train.
-        self.score = nn.Sequential(nn.Linear(dims.invariant, dims.scalar), nn.SiLU(),
-                                   nn.Linear(dims.scalar, 1, bias=False))
+        self.score = (nn.Sequential(nn.Linear(dims.invariant, dims.scalar), nn.SiLU(),
+                                    nn.Linear(dims.scalar, 1, bias=False)) if learned else None)
         self.scalar_query = nn.Parameter(torch.zeros(dims.scalar))
         self.mix = FiberLinear(dims, dims)
         self.dims = dims
@@ -137,10 +137,13 @@ class GlobalReadout(nn.Module):
         index = torch.where(valid)[0]
         record = batch[index]
         selected = h.index(index)
-        score = self.score(selected.invariant()).squeeze(-1)
-        top = score.new_full((size,), -torch.inf).scatter_reduce(0, record, score.detach(), 'amax')
-        weight = (score-top.index_select(0, record)).exp()
-        weight = weight/weight.new_zeros(size).index_add(0, record, weight).index_select(0, record)
+        if self.score is None:
+            weight = selected.s.new_ones(len(index))
+        else:
+            score = self.score(selected.invariant()).squeeze(-1)
+            top = score.new_full((size,), -torch.inf).scatter_reduce(0, record, score.detach(), 'amax')
+            weight = (score-top.index_select(0, record)).exp()
+            weight = weight/weight.new_zeros(size).index_add(0, record, weight).index_select(0, record)
         out = scatter_fiber(selected, record, size, weights=weight)
         out.s = out.s+self.scalar_query
         out = self.mix(out)
@@ -149,3 +152,28 @@ class GlobalReadout(nn.Module):
         out.v = out.v.masked_fill(empty[:, None, None], 0)
         out.t = out.t.masked_fill(empty[:, None, None, None], 0)
         return out
+
+
+class GlobalTransport(nn.Module):
+    """Coordinate-free, per-record collect/broadcast over visible node states.
+
+    Both controls use the same invariant broadcast gate. Only the learned
+    mode learns collection weights. Each tower owns its transport modules.
+    """
+    def __init__(self, dims: FiberDims, mode: str):
+        super().__init__()
+        if mode not in {'mean', 'learned'}:
+            raise ValueError('Global transport mode must be mean or learned.')
+        self.dims, self.mode = dims, mode
+        self.readout = GlobalReadout(dims, learned=mode == 'learned')
+        self.gate = nn.Linear(2*dims.invariant, dims.invariant)
+        self.scale = nn.Parameter(torch.full((dims.invariant,), 0.1))
+
+    def forward(self, h: Fiber, batch: Tensor, size: int) -> Fiber:
+        if not len(h.s):
+            return h
+        visible = torch.ones(len(h.s), dtype=torch.bool, device=h.s.device)
+        message = self.readout(h, visible, batch, size).index(batch)
+        gates = self.gate(torch.cat((h.invariant(), message.invariant()), -1)).sigmoid()*self.scale
+        gs, gv, gt = gates.split((self.dims.scalar, self.dims.vector, self.dims.tensor), -1)
+        return h + Fiber(message.s*gs, message.v*gv[..., None], message.t*gt[..., None, None])
