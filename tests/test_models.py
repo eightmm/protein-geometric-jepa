@@ -268,3 +268,11 @@ def test_encode_windows_covers_long_records_and_stays_equivariant(model):
     bb,_=model.encode_windows(long,'backbone',window=16,stride=8)
     moved,_=model.encode_windows(long.rigid_transform(r,torch.ones(3)),'backbone',window=16,stride=8)
     assert_fiber_close(moved['bb'].nodes,bb['bb'].nodes.rotate(r),atol=1e-4,rtol=1e-4)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='needs a CUDA device')
+def test_encode_sequence_string_follows_the_model_device(tiny_cfg):
+    from protein_jepa.models.jepa import ProteinJEPA
+    model=ProteinJEPA(tiny_cfg).cuda().eval()
+    out=model.encode_sequence('MKVLAG')
+    assert out.nodes.s.device.type=='cuda' and len(out.nodes.s)==6

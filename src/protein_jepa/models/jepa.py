@@ -389,7 +389,8 @@ class ProteinJEPA(nn.Module):
         """Sequence-only: residue states and the sequence CLS (no structure input)."""
         if isinstance(record_or_sequence, str):
             from ..data.synthetic import sequence_record
-            record_or_sequence = sequence_record(record_or_sequence)
+            device = self.predictor.mask_embedding.device
+            record_or_sequence = sequence_record(record_or_sequence).to(device)
         return self.encode(record_or_sequence, "sequence")["seq"]
 
     def encode_backbone(self, record):
