@@ -45,6 +45,10 @@ class ModelConfig:
     # SC atoms see their position in the residue's backbone frame (spec 7.1).
     pair_frame_features: bool = True
     sc_local_frame: bool = True
+    # Global readout: learned invariant attention, or uniform mean pooling (ablation).
+    global_readout: str = "attention"
+    # Predictor heads for the raw-geometry reconstruction baseline.
+    raw_reconstruction_heads: bool = True
     backend: str = "reference"
     dropout: float = 0.0
     # Explicit architecture selection: old checkpoints/configs remain baseline.
@@ -93,6 +97,8 @@ class ModelConfig:
             raise ValueError("dropout must be in [0,1).")
         if self.backend not in {"reference", "cueq-naive", "cueq-cuda"}:
             raise ValueError("Invalid backend.")
+        if self.global_readout not in {"attention", "mean"}:
+            raise ValueError("global_readout must be attention or mean.")
         if self.sc_context not in {"spatial", "local"}:
             raise ValueError("sc_context must be spatial or local.")
         if self.effdock_ffn not in {"bilinear", "gate"}:
@@ -110,7 +116,7 @@ class ModelConfig:
             raise ValueError("effdock_residual_scale must be in (0,1].")
         if self.effdock_aggregation not in {"soft", "gate", "degree"}:
             raise ValueError("Invalid effdock_aggregation.")
-        for key in ("pair_frame_features", "sc_local_frame"):
+        for key in ("pair_frame_features", "sc_local_frame", "raw_reconstruction_heads"):
             if not isinstance(getattr(self, key), bool):
                 raise ValueError(f"{key} must be boolean.")
         for key in ("effdock_conditioning", "effdock_dual_radial", "effdock_distance_decay",
@@ -150,8 +156,19 @@ class TrainConfig:
     # Keep for testing non-equivariant variants.
     rigid_augmentation: bool = False
     translation_std: float = 1.0
+    node_weight: float = 1.0
     global_weight: float = 0.1
     atom_weight: float = 0.2
+    # Raw-geometry reconstruction baseline (spec 19.6, default off): query
+    # residues' torsions (phi/psi/omega/CA-dihedral, chi1-4) and their CA
+    # displacement from the visible-CA centroid (equivariant contexts only).
+    raw_angle_weight: float = 0.0
+    raw_coordinate_weight: float = 0.0
+    # ema: stop-gradient EMA teacher. online: teacher-free baseline (spec 18.3),
+    # targets come from the online stack WITH gradient and are regularized too.
+    target_encoder: str = "ema"
+    # Semantic latent distance: mse (default) or cosine (spec 19.2 ablation).
+    semantic_distance: str = "mse"
     variance_weight: float = 0.05
     # On raw (un-normalized) online context semantic latents. Covariance is ON:
     # without it a 22-protein stochastic overfit collapsed to effective rank ~3
@@ -213,8 +230,13 @@ class TrainConfig:
             raise ValueError("semantic_regularizer must be variance or sphere_mmd.")
         if self.circular_regularizer not in {"floor", "torus_mmd"}:
             raise ValueError("circular_regularizer must be floor or torus_mmd.")
-        if min(self.global_weight, self.atom_weight, self.variance_weight, self.covariance_weight,
-               self.target_floor, self.circular_weight, self.circular_floor) < 0:
+        if self.target_encoder not in {"ema", "online"}:
+            raise ValueError("target_encoder must be ema or online.")
+        if self.semantic_distance not in {"mse", "cosine"}:
+            raise ValueError("semantic_distance must be mse or cosine.")
+        if min(self.node_weight, self.global_weight, self.atom_weight, self.variance_weight,
+               self.covariance_weight, self.target_floor, self.circular_weight,
+               self.circular_floor, self.raw_angle_weight, self.raw_coordinate_weight) < 0:
             raise ValueError("Loss weights must be nonnegative.")
 
 
@@ -228,7 +250,8 @@ def _checked(cls, data):
 # Architecture options added after checkpoints already existed: a stored
 # config that omits one was built without it, so it loads with this value
 # (fresh YAML configs get the dataclass defaults instead).
-LEGACY_MODEL_DEFAULTS = {"pair_frame_features": False, "sc_local_frame": False}
+LEGACY_MODEL_DEFAULTS = {"pair_frame_features": False, "sc_local_frame": False,
+                         "global_readout": "attention", "raw_reconstruction_heads": False}
 
 
 def model_config(data: dict) -> ModelConfig:

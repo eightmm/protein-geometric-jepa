@@ -121,8 +121,9 @@ class DirectionSeed(nn.Module):
 
 class GlobalReadout(nn.Module):
     """Invariant learned attention; l>0 is generated ONLY from input geometry."""
-    def __init__(self, dims: FiberDims):
+    def __init__(self, dims: FiberDims, mean: bool = False):
         super().__init__()
+        self.mean = mean   # uniform weights: the mean-pooling ablation of the learned slot
         # No final bias: softmax is shift-invariant, so it could never train.
         self.score = nn.Sequential(nn.Linear(dims.invariant, dims.scalar), nn.SiLU(),
                                    nn.Linear(dims.scalar, 1, bias=False))
@@ -137,7 +138,8 @@ class GlobalReadout(nn.Module):
         index = torch.where(valid)[0]
         record = batch[index]
         selected = h.index(index)
-        score = self.score(selected.invariant()).squeeze(-1)
+        score = (selected.s.new_zeros(len(index)) if self.mean
+                 else self.score(selected.invariant()).squeeze(-1))
         top = score.new_full((size,), -torch.inf).scatter_reduce(0, record, score.detach(), 'amax')
         weight = (score-top.index_select(0, record)).exp()
         weight = weight/weight.new_zeros(size).index_add(0, record, weight).index_select(0, record)

@@ -216,7 +216,7 @@ class BackboneEncoder(nn.Module):
         self.layers = nn.ModuleList(interaction_block(cfg, 2, cfg.radius_residue)
                                     for _ in range(cfg.backbone_layers))
         self.atom_feedback = FiberLinear(cfg.dims, cfg.dims)
-        self.readout = GlobalReadout(cfg.dims)
+        self.readout = GlobalReadout(cfg.dims, cfg.global_readout == 'mean')
 
     def forward(self, record, visible):
         feat = backbone_features(record, visible)
@@ -237,7 +237,7 @@ class SidechainEncoder(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         self.stem = AtomStem(cfg, backbone_only=False)
-        self.readout = GlobalReadout(cfg.dims)
+        self.readout = GlobalReadout(cfg.dims, cfg.global_readout == 'mean')
 
     def forward(self, record, visible):
         atoms, nodes, valid, ri, ai = self.stem(record, visible)
@@ -253,7 +253,7 @@ class AllAtomFusion(nn.Module):
         self.atom_layers = nn.ModuleList(interaction_block(cfg, 3, cfg.radius_atom) for _ in range(cfg.aa_layers))
         self.res_layer = interaction_block(cfg, 4, cfg.radius_residue)
         self.feedback = FiberLinear(cfg.dims, cfg.dims)
-        self.readout = GlobalReadout(cfg.dims)
+        self.readout = GlobalReadout(cfg.dims, cfg.global_readout == 'mean')
 
     def forward(self, record, visible, bb: EncodedView, sc: EncodedView):
         # No writes to bb/sc tensors: the clean BB output survives fusion unchanged.

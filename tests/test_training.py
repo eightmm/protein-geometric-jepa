@@ -182,8 +182,9 @@ def test_packed_group_equals_separate_samples(model,task):
             else:
                 assert info[key]==value,key
         assert inputs.keys()==ref_inputs.keys()
-        for name,(sem,circ) in ref_inputs.items():
-            torch.testing.assert_close(inputs[name][0],sem,atol=2e-5,rtol=2e-5)
+        for name,ref in ref_inputs.items():
+            for got,want in zip(inputs[name],ref):
+                torch.testing.assert_close(got,want,atol=2e-5,rtol=2e-5)
 
 
 def test_group_without_valid_targets_matches_single(model,protein):
@@ -275,3 +276,63 @@ def test_symmetric_atom_naming_is_not_a_learnable_difference(model,task):
     assert info['atom_loss']>0
     assert abs(info['atom_loss']-other_info['atom_loss'])<=2e-5*(1+info['atom_loss'])
     torch.testing.assert_close(loss,other,atol=2e-5,rtol=2e-5)
+
+
+def test_teacher_free_routes_gradient_through_targets(model,protein):
+    """target_encoder=online: targets come from the online stack with gradient
+    (a target-only view still trains), the EMA teacher is untouched, and the
+    target latents are regularized."""
+    model.train()
+    cfg=TrainConfig(target_encoder='online')
+    obs=make_observation(protein,'sc_to_chi',.3,torch.Generator().manual_seed(2))
+    loss,details=model([(protein,obs)],cfg)
+    assert torch.isfinite(loss)
+    loss.backward()
+    chi=model.online.encoder.chi
+    assert any(p.grad is not None and bool(p.grad.abs().sum()) for p in chi.parameters())
+    assert all(p.grad is None for p in model.teacher.parameters())
+    assert 'chi_target' in details['regularization']
+
+
+def test_semantic_cosine_and_mean_readout_options(tiny_cfg,protein):
+    from protein_jepa.models.jepa import ProteinJEPA
+    from protein_jepa.models.fibers import GlobalReadout, Fiber
+    obs=make_observation(protein,'bb_infill',.3,torch.Generator().manual_seed(2),min_span=2)
+    model=ProteinJEPA(replace(tiny_cfg,global_readout='mean')).eval()
+    with torch.no_grad():
+        mse,_,_=model.task_loss(protein,obs,TrainConfig())
+        cos,_,_=model.task_loss(protein,obs,TrainConfig(semantic_distance='cosine'))
+    assert torch.isfinite(cos) and float(cos)!=float(mse)
+    readout=GlobalReadout(tiny_cfg.dims,mean=True)
+    h=Fiber(torch.randn(5,16),torch.randn(5,4,3),torch.randn(5,2,3,3))
+    valid=torch.ones(5,dtype=torch.bool)
+    before=readout(h,valid)
+    torch.nn.init.normal_(readout.score[0].weight)   # learned scores are ignored
+    torch.testing.assert_close(readout(h,valid).s,before.s)
+
+
+def test_raw_reconstruction_baseline_is_equivariant_and_trains(model,protein):
+    """Raw torsion/CA-offset losses: finite, train their heads, and the loss is
+    invariant to a rigid motion of the record (the CA offset rotates with it)."""
+    from protein_jepa.geometry.primitives import random_rotation
+    cfg=TrainConfig(node_weight=0.,global_weight=0.,atom_weight=0.,raw_angle_weight=1.,
+                    raw_coordinate_weight=1.)
+    obs=make_observation(protein,'bb_infill',.3,torch.Generator().manual_seed(2),min_span=2)
+    loss,info,_=model.task_loss(protein,obs,cfg)
+    assert info['raw_angle_loss']>0 and info['raw_coordinate_loss']>0
+    loss.backward()
+    assert bool(model.predictor.raw_angle_head.weight.grad.abs().sum())
+    assert bool(model.predictor.raw_coordinate_head.linear.weight.grad.abs().sum())
+    r=random_rotation(torch.Generator().manual_seed(9))
+    moved=protein.rigid_transform(r,torch.tensor([2.,-4.,1.]))
+    with torch.no_grad():
+        a,_,_=model.task_loss(protein,obs,cfg)
+        b,_,_=model.task_loss(moved,obs,cfg)
+    torch.testing.assert_close(a,b,atol=2e-5,rtol=2e-5)
+
+
+def test_equivariant_collapse_diagnostics_are_logged(model,protein):
+    obs=make_observation(protein,'bb_infill',.3,torch.Generator().manual_seed(2),min_span=2)
+    _,details=model([(protein,obs)],TrainConfig())
+    reg=details['regularization']['bb']
+    assert {'l1_rms','l2_rms','l1_dead_channels','l1_gram_rank'}<=reg.keys()

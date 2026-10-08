@@ -284,14 +284,16 @@ def test_checkpoint_from_before_new_architecture_options_still_loads(tiny_cfg, t
     architecture it was trained with; resuming across the format change is refused."""
     from protein_jepa.config import model_config
     from protein_jepa.models.jepa import ProteinJEPA
-    old_cfg = replace(tiny_cfg, pair_frame_features=False, sc_local_frame=False)
+    old_cfg = replace(tiny_cfg, pair_frame_features=False, sc_local_frame=False,
+                      raw_reconstruction_heads=False)
     training = TrainConfig(steps=2, batch_size=1, crop_lengths=[10], threads=1)
     dataset = SyntheticDataset(2, 12, 17)
     train(old_cfg, training, dataset, tmp_path/'r', stop_after=1)
     path = tmp_path/'r/last.pt'
     payload = load_checkpoint(path)
     payload['model_config'] = {k: v for k, v in payload['model_config'].items()
-                               if k not in ('pair_frame_features', 'sc_local_frame')}
+                               if k not in ('pair_frame_features', 'sc_local_frame',
+                                            'global_readout', 'raw_reconstruction_heads')}
     payload['format_version'] = 4
     torch.save(payload, path)
     stored = load_checkpoint(path)

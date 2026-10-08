@@ -151,7 +151,8 @@ def train(model_cfg, train_cfg, dataset, output, resume=None, stop_after=None):
         gradnorm = torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.grad_clip, error_if_nonfinite=True)
         optimizer.step()
         scheduler.step()
-        model.update_teacher(ema_momentum(train_cfg, step))
+        if train_cfg.target_encoder == "ema":
+            model.update_teacher(ema_momentum(train_cfg, step))
         scalar_loss = loss.detach().clone()
         if world > 1:
             dist.all_reduce(scalar_loss)

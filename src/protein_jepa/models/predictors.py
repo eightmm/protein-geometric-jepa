@@ -92,11 +92,16 @@ def low_rms_fraction(h: Fiber, valid: Tensor, floor: float = 0.1, batch: Tensor 
     return float(low[0]) if batch is None else low
 
 
+RAW_ANGLES = 8   # phi, psi, omega, CA dihedral, chi1-4
+
+
 @dataclass
 class Prediction:
     nodes: TypedLatent
     global_state: TypedLatent
     atoms: Fiber | None = None
+    raw_angles: Tensor | None = None       # [Q, 8, 2] unit (cos, sin) per query residue
+    raw_coordinate: Tensor | None = None   # [Q, 3] CA offset from the visible-CA centroid / 10
 
 
 @dataclass
@@ -269,6 +274,11 @@ class CrossViewPredictor(nn.Module):
                                                        cfg.gram_channels) for v in VIEW_NAMES})
         # Atom targets are normalized hidden states (no head): see task_loss.
         self.atom_head = FiberLinear(d, FiberDims(d.scalar+2, d.vector, d.tensor))
+        # Raw-geometry reconstruction baseline heads (used only when requested).
+        self.raw_heads = cfg.raw_reconstruction_heads
+        if self.raw_heads:
+            self.raw_angle_head = nn.Linear(d.invariant, 2*RAW_ANGLES)
+            self.raw_coordinate_head = ChannelMix(d.vector, 1)
 
     def _scalar(self, view: str, level: str, role: int, like: Tensor) -> Tensor:
         index = like.new_tensor
@@ -284,7 +294,7 @@ class CrossViewPredictor(nn.Module):
     def forward(self, context: dict[str, ContextLatent], positions: Tensor, target_view: str,
                 query_residues: Tensor, atom_residues: Tensor | None = None,
                 atom_slots: Tensor | None = None, batch: Tensor | None = None,
-                size: int = 1) -> Prediction:
+                size: int = 1, raw: bool = False) -> Prediction:
         """`positions`/`batch` are per packed residue; the global prediction has
         one row per record. Tokens of different records never interact."""
         if target_view not in VIEW_NAMES:
@@ -325,8 +335,16 @@ class CrossViewPredictor(nn.Module):
             h = block(h, position, is_global, record, size)
         stage1 = self.final_norm(h)
         head = self.heads[target_view]
-        node = head(stage1.index(slice(n_context, n_context+n_nodes)))
+        queries = stage1.index(slice(n_context, n_context+n_nodes))
+        node = head(queries)
         glob_out = head(stage1.index(slice(n_context+n_nodes, None)))
+        raw_angles = raw_coordinate = None
+        if raw and not self.raw_heads:
+            raise ValueError("Raw reconstruction losses need model.raw_reconstruction_heads.")
+        if raw:
+            pairs = self.raw_angle_head(queries.invariant()).view(n_nodes, RAW_ANGLES, 2)
+            raw_angles = F.normalize(pairs, dim=-1, eps=1e-6)
+            raw_coordinate = self.raw_coordinate_head(queries.v)[:, 0]
         atom = None
         if atom_residues is not None:
             q = self._queries(len(atom_residues), target_view, "atom")
@@ -340,4 +358,4 @@ class CrossViewPredictor(nn.Module):
                 for block in self.atom_blocks:
                     q = block(cat_fibers([h, q]), position, is_global, record, size, rows)
             atom = self.atom_head(self.final_norm(q))
-        return Prediction(node, glob_out, atom)
+        return Prediction(node, glob_out, atom, raw_angles, raw_coordinate)

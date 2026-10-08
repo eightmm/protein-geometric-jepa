@@ -231,7 +231,7 @@ def _masked_term(per: Tensor, mask: Tensor, segment: Tensor, size: int) -> tuple
 def typed_distance(pred: TypedLatent, target: TypedLatent, mask: Tensor,
                    equivariant: bool, typed: bool = True, masks: dict | None = None,
                    kinds: tuple[str, ...] = ('sem', 'eq', 'circ', 'dir', 'frame'),
-                   segment: Tensor | None = None, size: int = 1):
+                   segment: Tensor | None = None, size: int = 1, semantic: str = 'mse'):
     """Per-kind distances, each normalized to O(1) and averaged over each
     record's valid tokens; kinds that rotate with the world (eq, dir, frame)
     only when the context provides a frame.
@@ -250,7 +250,8 @@ def typed_distance(pred: TypedLatent, target: TypedLatent, mask: Tensor,
     def add(name, value, weight=None):
         terms[name], counts[name] = segment_mean(value, seg, size, weight)
 
-    add('sem', (p.sem-t.sem).square().mean(-1))
+    add('sem', 1-F.cosine_similarity(p.sem, t.sem, dim=-1, eps=1e-6) if semantic == 'cosine'
+        else (p.sem-t.sem).square().mean(-1))
     if equivariant and 'eq' in kinds:
         if p.v.shape[1]:
             add('vector', (p.v-t.v).square().sum(-1).mean(-1)/3)

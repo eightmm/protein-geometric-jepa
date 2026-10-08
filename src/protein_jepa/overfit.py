@@ -46,7 +46,7 @@ def evaluate_pairs(model: ProteinJEPA, pairs, train_cfg: TrainConfig) -> dict:
         if 'node_top1' in info:
             top1[observation.task_name].append(info['node_top1'])
             chance[observation.task_name].append(info['node_chance'])
-        scalars += [sem for sem, _ in inputs.values()]
+        scalars += [z[0] for z in inputs.values()]
     model.train(was_training)
     tasks = {t: {'loss': sum(v)/len(v),
                  'node_top1': sum(top1[t])/len(top1[t]) if top1[t] else None,
@@ -149,7 +149,8 @@ def overfit(model_cfg: ModelConfig, train_cfg: TrainConfig, records, steps: int,
         torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.grad_clip)
         optimizer.step()
         scheduler.step()
-        model.update_teacher(ema_momentum(schedule, step))
+        if train_cfg.target_encoder == "ema":
+            model.update_teacher(ema_momentum(schedule, step))
     first, last = history[0], history[-1]
     return {'records': len(records), 'pairs': len(pairs), 'steps': steps,
             'converged_at_step': converged, 'patience': patience, 'lr_schedule': lr_schedule,
