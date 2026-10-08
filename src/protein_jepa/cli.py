@@ -32,7 +32,8 @@ def main(argv=None):
         p = commands.add_parser(name)
         p.add_argument('--config', required=True)
         p.add_argument('--output', required=True)
-        p.add_argument('--resume')
+        p.add_argument('--resume', help='Checkpoint path, or "auto" to continue from OUTPUT/last.pt when present.')
+        p.add_argument('--init-from', help='Load weights only and start a fresh optimization.')
         p.add_argument('--stop-after', type=int, help='Stop early without changing the planned LR schedule.')
         if name == 'train':
             p.add_argument('--manifest', required=True)
@@ -93,7 +94,11 @@ def main(argv=None):
             dataset = SyntheticDataset(args.count, args.length, training.seed)
         else:
             dataset = ManifestDataset(args.manifest, allow_observed_order=training.allow_observed_order)
-        train(cfg, training, dataset, args.output, args.resume, args.stop_after)
+        result = train(cfg, training, dataset, args.output, args.resume, args.stop_after,
+                       args.init_from)
+        if result.get('interrupted'):
+            # Saved after a stop signal: exit code 3 tells a scheduler to requeue.
+            raise SystemExit(3)
     elif args.command == 'overfit':
         from dataclasses import replace
         from .overfit import overfit, write

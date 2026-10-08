@@ -16,6 +16,7 @@ from .models.jepa import ProteinJEPA
 from .objectives.tasks import make_observation
 from .objectives.losses import effective_rank
 from .train import ema_momentum
+from .optim import build_optimizer, SchedulerSet
 from .data.records import random_crop
 from .geometry.primitives import random_rotation
 
@@ -113,8 +114,7 @@ def overfit(model_cfg: ModelConfig, train_cfg: TrainConfig, records, steps: int,
     pairs = fixed_observations(records, train_cfg, seed, crop=stochastic)
     sampler = torch.Generator().manual_seed(seed+1)
     model = ProteinJEPA(model_cfg).to(device).train()
-    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],
-                                  lr=learning_rate, weight_decay=0.0)
+    optimizer = build_optimizer(model, train_cfg, torch.device(device), learning_rate, weight_decay=0.0)
     schedule = TrainConfig(**{**train_cfg.__dict__, 'steps': steps})
     warmup = max(1, min(500, steps//20))
 
@@ -124,7 +124,7 @@ def overfit(model_cfg: ModelConfig, train_cfg: TrainConfig, records, steps: int,
         if step < warmup:
             return (step+1)/warmup
         return 0.1+0.9*0.5*(1+math.cos(math.pi*min((step-warmup)/max(steps-warmup, 1), 1)))
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_factor)
+    scheduler = SchedulerSet(optimizer, lr_factor)
     history, start = [], time.perf_counter()
     best_top1, best_loss, stale, converged = -1.0, math.inf, 0, None
     for step in range(steps+1):

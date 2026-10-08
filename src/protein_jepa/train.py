@@ -6,8 +6,9 @@ statistics. This is not a global-batch VICReg/SIGReg implementation.
 """
 from contextlib import nullcontext
 import json
-import math
 import os
+import signal
+import threading
 import time
 from pathlib import Path
 from dataclasses import asdict
@@ -19,6 +20,7 @@ from .config import model_config, train_config
 from .data.sampling import step_loader, to_device
 from .objectives.tasks import TASKS
 from .checkpoint import FORMAT_VERSION, save_checkpoint, load_checkpoint, rng_state, restore_rng
+from .optim import build_optimizer, SchedulerSet, warmup_cosine
 
 
 def ema_momentum(train_cfg, step):
@@ -27,9 +29,38 @@ def ema_momentum(train_cfg, step):
     return train_cfg.ema+(train_cfg.ema_end-train_cfg.ema)*min(progress, 1.0)
 
 
-def train(model_cfg, train_cfg, dataset, output, resume=None, stop_after=None):
+class StopRequest:
+    """SIGTERM/SIGUSR1 (preemption, wall-time warnings) ask the loop to save
+    and return after the current optimizer step instead of dying mid-step."""
+    SIGNALS = tuple(s for s in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGUSR1", None)) if s)
+
+    def __init__(self):
+        self.requested = False
+        self.previous = {}
+
+    def __enter__(self):
+        if threading.current_thread() is threading.main_thread():
+            for sig in self.SIGNALS:
+                self.previous[sig] = signal.signal(sig, self._handle)
+        return self
+
+    def _handle(self, signum, frame):
+        self.requested = True
+
+    def __exit__(self, *exc):
+        for sig, handler in self.previous.items():
+            signal.signal(sig, handler)
+
+
+def train(model_cfg, train_cfg, dataset, output, resume=None, stop_after=None, init_from=None):
+    """`resume="auto"` continues from output/last.pt when it exists (requeued
+    jobs); `init_from` loads weights only and starts a fresh optimization."""
     if set(train_cfg.tasks)-set(TASKS) or not train_cfg.tasks:
         raise ValueError("Unknown or empty task schedule.")
+    if resume is not None and init_from is not None:
+        raise ValueError("Use either resume or init_from, not both.")
+    if resume == "auto":
+        resume = Path(output)/"last.pt" if (Path(output)/"last.pt").exists() else None
     torch.set_num_threads(train_cfg.threads)
     # Full-precision float32 matmuls: TF32 gave no speedup here and raised the
     # rotation-invariance error of the loss from 3e-7 to 6e-4 (reports/batching).
@@ -72,16 +103,14 @@ def train(model_cfg, train_cfg, dataset, output, resume=None, stop_after=None):
         raise OSError(setup_error)
     torch.manual_seed(train_cfg.seed)
     model = ProteinJEPA(model_cfg).to(device)
-    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],
-                                  lr=train_cfg.learning_rate, weight_decay=train_cfg.weight_decay,
-                                  fused=device.type == 'cuda')
-    warmup = max(1, min(50, train_cfg.steps//10))
-    def schedule(step):
-        if step < warmup:
-            return (step+1)/warmup
-        phase = (step-warmup)/max(train_cfg.steps-warmup, 1)
-        return 0.1+0.9*0.5*(1+math.cos(math.pi*min(phase, 1)))
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, schedule)
+    if init_from is not None:
+        start = load_checkpoint(init_from)
+        if asdict(model_config(start['model_config'])) != asdict(model_cfg):
+            raise ValueError("init_from checkpoint has a different model configuration.")
+        model.load_state_dict(start['model'])
+    optimizer = build_optimizer(model, train_cfg, device)
+    scheduler = SchedulerSet(optimizer, warmup_cosine(train_cfg.steps,
+                                                      max(1, min(50, train_cfg.steps//10))))
     first = 0
     payload = None
     if resume:
@@ -96,7 +125,7 @@ def train(model_cfg, train_cfg, dataset, output, resume=None, stop_after=None):
             raise ValueError("Resume requires the same dataset manifest and world size.")
         # Where/how the run executes, not what it optimizes.
         ignore = {'device', 'threads', 'save_every', 'log_every', 'loader_workers', 'pack_size',
-                  'dist_backend'}
+                  'dist_backend', 'keep_checkpoints'}
         # Checked load: removed or unknown keys fail with an explanation.
         current, previous = asdict(train_cfg), asdict(train_config(payload['train_config']))
         if any(current[k] != previous.get(k) for k in current.keys()-ignore):
@@ -121,62 +150,77 @@ def train(model_cfg, train_cfg, dataset, output, resume=None, stop_after=None):
     last_loss = None
     loader = step_loader(dataset, train_cfg, rank, first, end)
     accumulate = train_cfg.accumulation_steps
-    for step in range(first, end):
-        loaded, microbatches = next(loader)
-        if loaded != step:
-            raise RuntimeError(f"Sample loader returned step {loaded}, expected {step}.")
-        optimizer.zero_grad(set_to_none=True)
-        step_loss = 0.0
-        tasks, samples, regularization = [], [], []
-        for micro, batch in enumerate(microbatches):
-            batch = [to_device(record, observation, device) for record, observation in batch]
-            tasks += [observation.task_name for _, observation in batch]
-            # Gradients all-reduce once per optimizer step, on the last microbatch.
-            sync = world == 1 or micro == accumulate-1
-            with nullcontext() if sync else wrapped.no_sync():
-                loss, details = wrapped(batch, train_cfg)
-                finite = torch.tensor(int(torch.isfinite(loss)), device=device)
-                if world > 1:
-                    dist.all_reduce(finite, op=dist.ReduceOp.MIN)
-                if not bool(finite):
-                    raise FloatingPointError(f"Nonfinite loss at step {step}; refusing optimizer/EMA update.")
-                (loss/accumulate).backward()
-            step_loss = step_loss+loss.detach()/accumulate
-            samples += details['samples']
-            regularization.append(details['regularization'])
-        loss = step_loss
-        # Every microbatch's diagnostics; regularization is per microbatch when accumulating.
-        details = {'samples': samples,
-                   'regularization': regularization[0] if accumulate == 1 else regularization}
-        gradnorm = torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.grad_clip, error_if_nonfinite=True)
-        optimizer.step()
-        scheduler.step()
-        if train_cfg.target_encoder == "ema":
-            model.update_teacher(ema_momentum(train_cfg, step))
-        scalar_loss = loss.detach().clone()
-        if world > 1:
-            dist.all_reduce(scalar_loss)
-            scalar_loss /= world
-        last_loss = float(scalar_loss)
-        if rank == 0 and (step % train_cfg.log_every == 0 or step == end-1):
-            row = {'step': step+1, 'loss': last_loss, 'tasks': tasks,
-                   'ema': ema_momentum(train_cfg, step),
-                   'grad_norm': float(gradnorm), 'lr': scheduler.get_last_lr()[0],
-                   'elapsed_seconds': time.perf_counter()-start_time, **details}
-            with (out/'metrics.jsonl').open('a') as stream:
-                stream.write(json.dumps(row)+'\n')
-            print(json.dumps({k: row[k] for k in ('step', 'tasks', 'loss', 'grad_norm')}), flush=True)
-        if (step+1) % train_cfg.save_every == 0 or step == end-1:
-            local_state = rng_state()
-            rank_states = [None]*world
+    stop = StopRequest().__enter__()
+    try:
+        interrupted = False
+        for step in range(first, end):
+            loaded, microbatches = next(loader)
+            if loaded != step:
+                raise RuntimeError(f"Sample loader returned step {loaded}, expected {step}.")
+            optimizer.zero_grad(set_to_none=True)
+            step_loss = 0.0
+            tasks, samples, regularization = [], [], []
+            for micro, batch in enumerate(microbatches):
+                batch = [to_device(record, observation, device) for record, observation in batch]
+                tasks += [observation.task_name for _, observation in batch]
+                # Gradients all-reduce once per optimizer step, on the last microbatch.
+                sync = world == 1 or micro == accumulate-1
+                with nullcontext() if sync else wrapped.no_sync():
+                    loss, details = wrapped(batch, train_cfg)
+                    finite = torch.tensor(int(torch.isfinite(loss)), device=device)
+                    if world > 1:
+                        dist.all_reduce(finite, op=dist.ReduceOp.MIN)
+                    if not bool(finite):
+                        raise FloatingPointError(f"Nonfinite loss at step {step}; refusing optimizer/EMA update.")
+                    (loss/accumulate).backward()
+                step_loss = step_loss+loss.detach()/accumulate
+                samples += details['samples']
+                regularization.append(details['regularization'])
+            loss = step_loss
+            # Every microbatch's diagnostics; regularization is per microbatch when accumulating.
+            details = {'samples': samples,
+                       'regularization': regularization[0] if accumulate == 1 else regularization}
+            gradnorm = torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.grad_clip, error_if_nonfinite=True)
+            optimizer.step()
+            scheduler.step()
+            if train_cfg.target_encoder == "ema":
+                model.update_teacher(ema_momentum(train_cfg, step))
+            scalar_loss = loss.detach().clone()
             if world > 1:
-                dist.all_gather_object(rank_states, local_state)
-            else:
-                rank_states[0] = local_state
-            if rank == 0:
-                save_checkpoint(out/'last.pt', model, optimizer, scheduler, step+1, model_cfg,
-                                train_cfg, rank_states, dataset.fingerprint, world)
+                dist.all_reduce(scalar_loss)
+                scalar_loss /= world
+            last_loss = float(scalar_loss)
+            if rank == 0 and (step % train_cfg.log_every == 0 or step == end-1):
+                row = {'step': step+1, 'loss': last_loss, 'tasks': tasks,
+                       'ema': ema_momentum(train_cfg, step),
+                       'grad_norm': float(gradnorm), 'lr': scheduler.get_last_lr()[0],
+                       'elapsed_seconds': time.perf_counter()-start_time, **details}
+                with (out/'metrics.jsonl').open('a') as stream:
+                    stream.write(json.dumps(row)+'\n')
+                print(json.dumps({k: row[k] for k in ('step', 'tasks', 'loss', 'grad_norm')}), flush=True)
+            # A signal on any rank stops every rank after this same step.
+            halt = torch.tensor(int(stop.requested), device=device)
+            if world > 1:
+                dist.all_reduce(halt, op=dist.ReduceOp.MAX)
+            interrupted = bool(halt) and step < end-1
+            if (step+1) % train_cfg.save_every == 0 or step == end-1 or interrupted:
+                local_state = rng_state()
+                rank_states = [None]*world
+                if world > 1:
+                    dist.all_gather_object(rank_states, local_state)
+                else:
+                    rank_states[0] = local_state
+                if rank == 0:
+                    save_checkpoint(out/'last.pt', model, optimizer, scheduler, step+1, model_cfg,
+                                    train_cfg, rank_states, dataset.fingerprint, world,
+                                    keep=train_cfg.keep_checkpoints)
+            if interrupted:
+                end = step+1
+                break
+    finally:
+        stop.__exit__()
     result = {'steps': end, 'loss': last_loss, 'seconds': time.perf_counter()-start_time,
+              'interrupted': interrupted,
               'backend': model_cfg.backend, 'interaction': model_cfg.interaction, 'device': str(device), 'world_size': world,
               'trainable_parameters': sum(p.numel() for p in model.parameters() if p.requires_grad)}
     if rank == 0:

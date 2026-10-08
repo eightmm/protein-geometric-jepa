@@ -8,8 +8,10 @@ import torch
 # 4 = same weights; samples are a pure function of the step (no sampler state).
 # 5 = rename-invariant atom loss; older formats load (legacy architecture
 #     defaults) for inference but do not resume.
-FORMAT_VERSION = 5
-READABLE = (3, 4, 5)
+# 7 = optimizer/scheduler states are lists (AdamW, plus Muon when enabled).
+#     (6 is reserved for the concurrent global-latent-contract change.)
+FORMAT_VERSION = 7
+READABLE = (3, 4, 5, 7)
 
 
 def rng_state():
@@ -27,7 +29,7 @@ def restore_rng(state):
 
 
 def save_checkpoint(path, model, optimizer, scheduler, step, model_cfg, train_cfg,
-                    rank_rng, fingerprint, world_size):
+                    rank_rng, fingerprint, world_size, keep: int = 0):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(format_version=FORMAT_VERSION, model=model.state_dict(), optimizer=optimizer.state_dict(),
@@ -44,6 +46,12 @@ def save_checkpoint(path, model, optimizer, scheduler, step, model_cfg, train_cf
     finally:
         if tmp.exists():
             tmp.unlink()
+    if keep:
+        # Hard-link-free copy per save; prune to the newest `keep`.
+        numbered = path.parent/f"step_{int(step):08d}.pt"
+        numbered.write_bytes(path.read_bytes())
+        for old in sorted(path.parent.glob("step_*.pt"))[:-keep]:
+            old.unlink()
 
 
 def load_checkpoint(path):

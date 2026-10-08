@@ -20,7 +20,7 @@
 - **Loss**: type마다 거리를 따로 씁니다. sem은 MSE, irreps는 Frobenius, 원과 방향은 1 − cos, frame은 chordal 거리입니다.
 - **Collapse 방지**: sem에는 variance floor를 걸고, 원에는 channel별 floor를 겁니다. arXiv:2609.21656의 heat-kernel MMD(`torus_mmd`, `sphere_mmd`)는 ablation 옵션입니다.
 - **실행 검증**: 단백질 22개로 실제 학습과 같은 방식의 확률적 overfit(random crop, 매번 새 mask, task 혼합, EMA)을 돌렸습니다. loss는 37%까지 떨어졌고, retrieval은 우연 수준의 6.8배이며 계속 상승 중이었습니다. 이때 covariance 항이 rank 붕괴를 막습니다. 실제 CuEq CUDA 경로도 Blackwell GPU에서 통과했습니다. 테스트는 CPU에서 189 passed / 2 CUDA skips, GPU에서 CuEq·학습 경로 24 passed입니다(`reports/typed_latent/pytest_*.txt`).
-- **비교 기준**: `latent_typing: euclidean`이 all-Euclidean baseline입니다. 근거와 실험 결과는 [TYPED_LATENT_KO.md](docs/TYPED_LATENT_KO.md)에 있습니다. checkpoint는 format 4이고 format 3 weight도 읽습니다. format 1·2는 읽지 않습니다.
+- **비교 기준**: `latent_typing: euclidean`이 all-Euclidean baseline입니다. 근거와 실험 결과는 [TYPED_LATENT_KO.md](docs/TYPED_LATENT_KO.md)에 있습니다. checkpoint는 format 7이고, format 3·4·5의 weight도 추론용으로 읽습니다(이어 학습은 불가). format 1·2는 읽지 않습니다.
 
 ## JEPA target·predictor 결함 수정
 

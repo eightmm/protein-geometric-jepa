@@ -209,13 +209,16 @@ def test_retrieval_of_a_record_ignores_other_records():
     assert float(packed[1])==float(alone[0])
 
 
-def test_resume_is_exact_with_workers_and_accumulation(tiny_cfg,tmp_path):
+@pytest.mark.parametrize('optimizer',['adamw',pytest.param('muon',marks=pytest.mark.skipif(
+    not hasattr(torch.optim,'Muon'),reason='needs torch.optim.Muon'))])
+def test_resume_is_exact_with_workers_and_accumulation(tiny_cfg,tmp_path,optimizer):
     """Samples depend only on the step: a run split by stop/resume and built
-    by background workers equals one in-process run, with accumulation on."""
+    by background workers equals one in-process run, with accumulation on
+    (and with the Muon + AdamW optimizer set)."""
     import json
     cfg=replace(tiny_cfg,dropout=.1)   # dropout RNG must survive worker start-up
     base=TrainConfig(steps=4,batch_size=2,accumulation_steps=2,crop_lengths=[10,12],
-                     log_every=1,save_every=2,threads=1,mask_min_span=2)
+                     log_every=1,save_every=2,threads=1,mask_min_span=2,optimizer=optimizer)
     dataset=SyntheticDataset(4,14,33)
     tiny_cfg=cfg
     train(tiny_cfg,base,dataset,tmp_path/'full')
@@ -385,3 +388,64 @@ def test_raw_reconstruction_ignores_unobserved_coordinates(model,protein):
         assert torch.isfinite(loss)
         loss.backward()
         assert all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
+
+
+def test_muon_takes_hidden_matrices_and_adamw_the_rest(tiny_cfg):
+    from protein_jepa.models.jepa import ProteinJEPA
+    from protein_jepa.optim import parameter_groups
+    model=ProteinJEPA(replace(tiny_cfg,interaction='effdock',effdock_radial_hidden=24))
+    muon,decay,no_decay=parameter_groups(model,True,True)
+    names={id(p):n for n,p in model.named_parameters()}
+    embeddings={id(m.weight) for m in model.modules() if isinstance(m,torch.nn.Embedding)}
+    assert muon and all(p.ndim==2 and min(p.shape)>=2 for p in muon)
+    assert not any('.heads.' in names[id(p)] or '_head' in names[id(p)] or id(p) in embeddings
+                   or names[id(p)].endswith(('attention.bias','tp.weight','seed.v','seed.t'))
+                   for p in muon)
+    assert all(p.ndim<2 or id(p) in embeddings or names[id(p)].endswith('attention.bias')
+               for p in no_decay)
+    trainable={id(p) for p in model.parameters() if p.requires_grad}
+    assert {id(p) for p in muon+decay+no_decay}==trainable and len(muon+decay+no_decay)==len(trainable)
+    _,all_decay,none=parameter_groups(model,False,False)
+    assert not none and len(all_decay)==len(trainable)
+
+
+def test_auto_resume_keep_checkpoints_and_init_from(tiny_cfg,tmp_path):
+    from protein_jepa.checkpoint import load_checkpoint as load
+    training=TrainConfig(steps=4,batch_size=1,crop_lengths=[10],threads=1,save_every=1,
+                         keep_checkpoints=2,mask_min_span=2)
+    dataset=SyntheticDataset(3,12,5)
+    assert train(tiny_cfg,training,dataset,tmp_path/'r',resume='auto',stop_after=2)['steps']==2
+    assert train(tiny_cfg,training,dataset,tmp_path/'r',resume='auto')['steps']==4
+    assert sorted(p.name for p in (tmp_path/'r').glob('step_*.pt'))==['step_00000003.pt','step_00000004.pt']
+    train(tiny_cfg,training,dataset,tmp_path/'full')
+    a,b=load(tmp_path/'full'/'last.pt'),load(tmp_path/'r'/'last.pt')
+    assert all(torch.equal(a['model'][k],b['model'][k]) for k in a['model'])
+    fresh=train(tiny_cfg,replace(training,steps=1),dataset,tmp_path/'init',init_from=tmp_path/'r'/'last.pt')
+    assert fresh['steps']==1 and load(tmp_path/'init'/'last.pt')['step']==1
+    with pytest.raises(ValueError,match='different model'):
+        train(replace(tiny_cfg,scalar=8,heads=4),training,dataset,tmp_path/'bad',
+              init_from=tmp_path/'r'/'last.pt')
+
+
+def test_stop_signal_saves_and_resumes_exactly(tiny_cfg,tmp_path):
+    """SIGTERM mid-run: the step finishes, a checkpoint is written, the run
+    reports interrupted, and resuming reproduces the uninterrupted run."""
+    import os, signal
+    from protein_jepa.checkpoint import load_checkpoint as load
+    training=TrainConfig(steps=5,batch_size=1,crop_lengths=[10],threads=1,save_every=10,
+                         mask_min_span=2)
+    class SignalOnce(SyntheticDataset):
+        calls=0
+        def __getitem__(self,i):
+            SignalOnce.calls+=1
+            if SignalOnce.calls==2:      # during step 1
+                os.kill(os.getpid(),signal.SIGTERM)
+            return super().__getitem__(i)
+    stopped=train(tiny_cfg,training,SignalOnce(3,12,5),tmp_path/'r')
+    assert stopped['interrupted'] and stopped['steps']==2 and load(tmp_path/'r'/'last.pt')['step']==2
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL or callable(signal.getsignal(signal.SIGTERM))
+    dataset=SyntheticDataset(3,12,5)
+    train(tiny_cfg,training,dataset,tmp_path/'r',resume=tmp_path/'r'/'last.pt')
+    train(tiny_cfg,training,dataset,tmp_path/'full')
+    a,b=load(tmp_path/'full'/'last.pt'),load(tmp_path/'r'/'last.pt')
+    assert all(torch.equal(a['model'][k],b['model'][k]) for k in a['model'])

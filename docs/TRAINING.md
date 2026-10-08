@@ -68,6 +68,21 @@ MANIFEST=/abs/manifest.jsonl OUTDIR=/abs/runs/jepa CONFIG=configs/effdock_cueq_g
 | `loader_workers` | 0 | crop·mask를 미리 만드는 background process 수(forkserver/spawn). 0은 main process에서 만든다. `train()`을 직접 부르는 script는 `if __name__ == "__main__":` guard가 필요하다 |
 | `dist_backend` | auto | auto는 CUDA면 nccl, CPU면 gloo. gloo + CUDA는 GPU 하나를 여러 rank가 나눠 쓰는 시험용 |
 
+최적화와 checkpoint 옵션:
+
+| 옵션 (`training:`) | 기본값 | 의미 |
+|---|---|---|
+| `optimizer` | adamw | `muon`: hidden layer의 `Linear` weight와 Transformer QKV 행렬은 Muon, 나머지(embedding, direction seed, CuEq tensor product weight, 상대 위치 bias, 1D 파라미터, latent head)는 AdamW. `match_rms_adamw` 보정으로 learning rate 하나를 같이 쓴다. PyTorch 2.9 이상 필요 |
+| `muon_momentum` | 0.95 | Muon momentum (Nesterov) |
+| `decay_exclusions` | true | 1D 파라미터(bias, norm gain, residual scale), embedding, 상대 위치 bias table에는 weight decay를 주지 않는다. false면 전부 decay(이전 동작) |
+| `keep_checkpoints` | 0 | `last.pt` 외에 최근 N개 저장본을 `step_<N>.pt`로 남긴다 |
+
+- `--resume auto`: 출력 폴더에 `last.pt`가 있으면 이어서, 없으면 처음부터 학습한다. 재제출(requeue)된 job에 그대로 쓴다.
+- `--init-from ckpt`: weight만 불러와 step 0부터 새 optimizer로 학습한다. 모델 설정이 같아야 한다.
+- **중단 신호:** SIGTERM이나 SIGUSR1을 받으면 현재 optimizer step을 마치고 `last.pt`를 저장한 뒤 `interrupted: true`로 끝낸다. CLI는 exit code 3을 돌려준다. 여러 rank 중 하나만 신호를 받아도 모든 rank가 같은 step에서 멈춘다. 이어 학습하면 끊김 없이 돌린 것과 bit 단위로 같다(`test_stop_signal_saves_and_resumes_exactly`).
+- Slurm 스크립트는 종료 5분 전 SIGTERM을 받도록 설정되어 있고, 중단된 경우 스스로 requeue한 뒤 `--resume auto`로 이어 간다. torchrun은 SIGTERM을 worker에 전달하고 일정 시간 뒤 강제 종료하므로, step 하나가 그 시간 안에 끝나야 한다. **실제 Slurm 환경에서는 실행해 보지 않았다.**
+- Resume에서는 `optimizer`, `muon_momentum`, `decay_exclusions`를 바꿀 수 없다. checkpoint format 7부터 optimizer와 scheduler 상태를 목록으로 저장한다.
+
 목적함수 비교용 옵션(설계 명세 18.3, 19.2, 19.6, 27절)은 기본값이 현재 방식이다.
 
 | 옵션 (`training:`) | 기본값 | 의미 |
@@ -78,11 +93,11 @@ MANIFEST=/abs/manifest.jsonl OUTDIR=/abs/runs/jepa CONFIG=configs/effdock_cueq_g
 | `raw_angle_weight` / `raw_coordinate_weight` | 0 / 0 | raw 기하 재구성 baseline: 질의 residue의 torsion(1−cos)과 visible Cα 중심 기준 Cα 변위(Å/10, 좌표가 있는 context만) |
 | `tasks` | 9개 | 선택형 `seq_infill`(서열만의 JEPA)을 더해 sequence-only baseline을 만든다 |
 
-- **Sample은 (seed, rank, step, sample 번호)의 순수 함수다.** sampler 상태를 checkpoint에 두지 않으므로 resume은 step 번호만으로 정확히 이어지고, worker 수가 달라도 같은 sample이 나온다(`test_resume_is_exact_with_workers_and_accumulation`, `test_step_loader_workers_match_in_process`). 이 방식은 checkpoint format 4이며, format 3 checkpoint의 weight는 읽지만 그 학습을 resume하지는 않는다.
+- **Sample은 (seed, rank, step, sample 번호)의 순수 함수다.** sampler 상태를 checkpoint에 두지 않으므로 resume은 step 번호만으로 정확히 이어지고, worker 수가 달라도 같은 sample이 나온다(`test_resume_is_exact_with_workers_and_accumulation`, `test_step_loader_workers_match_in_process`). 이 방식은 checkpoint format 4부터다. 현재 format은 7이고, 그보다 오래된 checkpoint(3·4·5)의 weight는 읽지만 그 학습을 resume하지는 않는다.
 - **Batch:** microbatch 안에서 같은 task의 sample들은 하나의 disjoint-union batch로 계산한다. graph edge는 record 안에만 생기고, Transformer와 predictor attention은 record별 padding으로 서로를 보지 않으며, loss와 진단값은 record별로 계산한다. 결과는 sample을 하나씩 계산한 것과 같다(`test_packed_group_equals_separate_samples`). task가 9개이므로 task당 여러 sample이 모이도록 batch를 수십 단위로 잡아야 처리량이 오른다([측정](../reports/batching/README.md)).
 - **Accumulation:** metrics의 `samples`에는 모든 microbatch의 sample이 들어가고, `regularization`은 microbatch별 목록이 된다. task별 loss 평균은 microbatch 안에서 하므로, `batch_size=B, accumulation_steps=K`는 `batch_size=B×K` 한 번과 수치가 정확히 같지는 않다. 유효 batch는 `world × K × B`이고 learning rate는 자동으로 조정하지 않는다.
 - **정밀도:** float32 전용이다. TF32는 속도 이득이 없었고 loss의 회전 불변 오차를 3e-7에서 6e-4로 키웠다. bf16 autocast는 지원하지 않는다([측정](../reports/training_env/README.md)).
-- **Resume에서 바꿔도 되는 옵션:** device, threads, log/save 주기, `loader_workers`, `pack_size`, `dist_backend`. `accumulation_steps`는 최적화를 바꾸므로 바꿀 수 없다. world size도 같아야 한다.
+- **Resume에서 바꿔도 되는 옵션:** device, threads, log/save 주기, `loader_workers`, `pack_size`, `dist_backend`, `keep_checkpoints`. `accumulation_steps`는 최적화를 바꾸므로 바꿀 수 없다. world size도 같아야 한다.
 - **Regularizer 통계는 rank-local이다.** 전역 batch의 variance/covariance를 계산하는 distributed regularizer와 같지 않다.
 
 검증 범위([기록](../reports/training_env/README.md)):

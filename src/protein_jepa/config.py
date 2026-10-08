@@ -139,6 +139,13 @@ class TrainConfig:
     batch_size: int = 2
     learning_rate: float = 0.0003
     weight_decay: float = 0.01
+    # adamw, or muon (Muon on hidden weight matrices + AdamW for the rest;
+    # PyTorch >= 2.9). One learning_rate serves both (match_rms_adamw scaling).
+    optimizer: str = "adamw"
+    muon_momentum: float = 0.95
+    # No weight decay on 1D parameters (biases, norm gains, residual scales),
+    # embeddings and the relative-position bias table. False decays everything.
+    decay_exclusions: bool = True
     # Teacher momentum rises linearly from ema to ema_end over the planned steps.
     ema: float = 0.996
     ema_end: float = 1.0
@@ -197,6 +204,8 @@ class TrainConfig:
     # Max samples per packed group (0 = all same-task samples of a microbatch);
     # bounds peak memory without changing the per-sample losses.
     pack_size: int = 0
+    # Also keep step_<N>.pt for the last N saves (0: only last.pt).
+    keep_checkpoints: int = 0
     # auto: nccl on CUDA, gloo on CPU. gloo on CUDA lets several ranks share one GPU (testing).
     dist_backend: str = "auto"
     allow_observed_order: bool = False
@@ -226,6 +235,10 @@ class TrainConfig:
             raise ValueError("Invalid threads/gradient clipping/weight decay.")
         if self.accumulation_steps < 1 or self.loader_workers < 0 or self.pack_size < 0:
             raise ValueError("accumulation_steps must be positive; loader_workers/pack_size nonnegative.")
+        if self.optimizer not in {"adamw", "muon"}:
+            raise ValueError("optimizer must be adamw or muon.")
+        if not 0 <= self.muon_momentum < 1 or self.keep_checkpoints < 0:
+            raise ValueError("muon_momentum must be in [0, 1); keep_checkpoints nonnegative.")
         if self.dist_backend not in {"auto", "nccl", "gloo"}:
             raise ValueError("dist_backend must be auto, nccl or gloo.")
         if self.semantic_regularizer not in {"variance", "sphere_mmd"}:
