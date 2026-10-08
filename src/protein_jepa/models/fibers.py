@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn, Tensor
 from ..geometry.primitives import symmetric_traceless, outer_stf
+from ..data.batch import take
 
 
 @dataclass(frozen=True)
@@ -32,7 +33,7 @@ class Fiber:
                    like.new_zeros(n, dims.tensor, 3, 3))
 
     def index(self, index):
-        return Fiber(self.s[index], self.v[index], self.t[index])
+        return Fiber(take(self.s, index), take(self.v, index), take(self.t, index))
 
     def detach(self):
         return Fiber(self.s.detach(), self.v.detach(), self.t.detach())
@@ -129,15 +130,22 @@ class GlobalReadout(nn.Module):
         self.mix = FiberLinear(dims, dims)
         self.dims = dims
 
-    def forward(self, h: Fiber, valid: Tensor) -> Fiber:
-        if not bool(valid.any()):
-            out = Fiber.zeros(1, self.dims, h.s)
-            out.s = out.s + self.scalar_query[None]
-            return out
-        selected = h.index(valid)
+    def forward(self, h: Fiber, valid: Tensor, batch: Tensor | None = None, size: int = 1) -> Fiber:
+        """One readout per record (`batch` = record of each node); a record
+        without valid nodes reads out the bare query."""
+        batch = torch.zeros(len(h.s), dtype=torch.long, device=h.s.device) if batch is None else batch
+        index = torch.where(valid)[0]
+        record = batch[index]
+        selected = h.index(index)
         score = self.score(selected.invariant()).squeeze(-1)
-        w = score.softmax(0)
-        out = scatter_fiber(selected, torch.zeros(len(w), device=w.device, dtype=torch.long),
-                            1, weights=w)
-        out.s = out.s+self.scalar_query[None]
-        return self.mix(out)
+        top = score.new_full((size,), -torch.inf).scatter_reduce(0, record, score.detach(), 'amax')
+        weight = (score-top.index_select(0, record)).exp()
+        weight = weight/weight.new_zeros(size).index_add(0, record, weight).index_select(0, record)
+        out = scatter_fiber(selected, record, size, weights=weight)
+        out.s = out.s+self.scalar_query
+        out = self.mix(out)
+        empty = (torch.bincount(record, minlength=size) == 0)
+        out.s = torch.where(empty[:, None], self.scalar_query.expand(size, -1), out.s)
+        out.v = out.v.masked_fill(empty[:, None, None], 0)
+        out.t = out.t.masked_fill(empty[:, None, None, None], 0)
+        return out

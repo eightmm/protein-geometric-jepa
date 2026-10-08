@@ -19,6 +19,7 @@ import torch
 from torch import nn, Tensor
 from torch.nn import functional as F
 from .fibers import Fiber, FiberDims
+from ..data.batch import segment_mean, take
 
 GEOMETRIC_VIEWS = {"bb", "sc", "aa"}
 # Absolute raw-norm floor for dir/frame targets: 100x the unit-projection eps,
@@ -39,7 +40,7 @@ class TypedLatent:
     strength: Tensor
 
     def index(self, index) -> "TypedLatent":
-        return TypedLatent(*(getattr(self, f.name)[index] for f in fields(self)))
+        return TypedLatent(*(take(getattr(self, f.name), index) for f in fields(self)))
 
     def rotate(self, r: Tensor) -> "TypedLatent":
         rot = lambda m: torch.einsum('ij,...jk,lk->...il', r, m, r)  # noqa: E731
@@ -160,17 +161,29 @@ def _rms(x: Tensor, dims: tuple[int, ...], dof: int) -> Tensor:
     return (x.square().sum(dims)/dof).mean(-1, keepdim=True).sqrt()
 
 
-def eq_reference(z: TypedLatent, valid: Tensor) -> tuple[Tensor, Tensor]:
-    return tuple(_rms(x, dims, dof)[valid].mean() if bool(valid.any()) else x.new_zeros(())
-                 for x, dims, dof in ((z.v, (-1,), 3), (z.t, (-1, -2), 5)))
+def _per_token(value: Tensor, index: Tensor) -> Tensor:
+    """Per-record statistic ([B] or a scalar for one record) gathered per token."""
+    return value.reshape(-1)[index]
+
+
+def eq_reference(z: TypedLatent, valid: Tensor, batch: Tensor | None = None,
+                 size: int = 1) -> tuple[Tensor, Tensor]:
+    """Mean l=1 / l=2 token RMS over each record's valid tokens (zero if none);
+    scalars without `batch`, else one value per record."""
+    index = torch.zeros(len(valid), dtype=torch.long, device=valid.device) if batch is None else batch
+    out = tuple(segment_mean(_rms(x, dims, dof)[:, 0], index, size, valid)[0]
+                for x, dims, dof in ((z.v, (-1,), 3), (z.t, (-1, -2), 5)))
+    return tuple(x[0] for x in out) if batch is None else out
 
 
 def make_typed_target(z: TypedLatent, valid: Tensor | None, floor: float = 0.1,
                       instance: bool = True, reference: tuple[Tensor, Tensor] | None = None,
-                      eps: float = 1e-6) -> tuple[TypedLatent, dict[str, Tensor]]:
+                      eps: float = 1e-6, batch: Tensor | None = None,
+                      size: int = 1) -> tuple[TypedLatent, dict[str, Tensor]]:
     """Parameter-free normalization of teacher latents (+ per-kind validity).
 
-    sem: instance norm over the sample's valid tokens with a soft variance
+    Every statistic is taken per record (`batch` = record of each token).
+    sem: instance norm over the record's valid tokens with a soft variance
     floor (0.01 x mean channel variance) so dead channels are not inflated;
     single tokens (global) use layer norm. l>0: soft per-token RMS with
     tau = floor x mean RMS, plus two log-magnitude scalars appended to sem.
@@ -180,16 +193,20 @@ def make_typed_target(z: TypedLatent, valid: Tensor | None, floor: float = 0.1,
     (scale-free; missing rows must not change which observed tokens count).
     """
     n = len(z.sem)
-    valid = torch.ones(n, dtype=torch.bool, device=z.sem.device) if valid is None else valid
-    if instance and int(valid.sum()) > 1:
-        ref = z.sem[valid]
-        var = ref.var(0, unbiased=False)
-        sem = (z.sem-ref.mean(0))/(var+0.01*var.mean()+eps).sqrt()
-    else:
-        sem = F.layer_norm(z.sem, z.sem.shape[-1:], eps=eps)
-    means = eq_reference(z, valid) if reference is None else reference
+    device = z.sem.device
+    valid = torch.ones(n, dtype=torch.bool, device=device) if valid is None else valid
+    batch = torch.zeros(n, dtype=torch.long, device=device) if batch is None else batch
+    sem = F.layer_norm(z.sem, z.sem.shape[-1:], eps=eps)
+    if instance:
+        mean, count = segment_mean(z.sem, batch, size, valid)
+        centred = z.sem-mean[batch]
+        var = segment_mean(centred.square(), batch, size, valid)[0]
+        scale = (var+0.01*var.mean(-1, keepdim=True)+eps).sqrt()
+        sem = torch.where((count > 1)[batch, None], centred/scale[batch], sem)
+    means = eq_reference(z, valid, batch, size) if reference is None else reference
     out, magnitude = [], []
     for (x, dims, dof), mean in zip(((z.v, (-1,), 3), (z.t, (-1, -2), 5)), means):
+        mean = _per_token(mean, batch)[:, None]
         r = _rms(x, dims, dof)
         tau = floor*mean
         scale = (r.square()+tau.square()+eps**2).rsqrt()
@@ -197,50 +214,71 @@ def make_typed_target(z: TypedLatent, valid: Tensor | None, floor: float = 0.1,
         magnitude.append(((r+tau+eps)/(mean+tau+eps)).log())
     ku = z.dir.shape[1]
     strength = z.strength
-    reference = (strength[valid].mean(0, keepdim=True) if bool(valid.any())
-                 else strength.new_zeros(1, strength.shape[1]))
+    reference = segment_mean(strength, batch, size, valid)[0][batch]
     ok = (strength > STRENGTH_FLOOR) & (strength >= 0.1*reference)
     masks = {'dir': ok[:, :ku], 'frame': ok[:, ku:]}
     return TypedLatent(torch.cat([sem]+magnitude, -1), out[0], out[1], z.circ, z.dir,
                        z.frame, z.strength), masks
 
 
+def _masked_term(per: Tensor, mask: Tensor, segment: Tensor, size: int) -> tuple[Tensor, Tensor]:
+    """Per-record mean of per[token, channel] over the entries where mask holds."""
+    weight = mask.sum(-1)
+    value = (per*mask).sum(-1)/weight.clamp_min(1)
+    return segment_mean(value, segment, size, weight)
+
+
 def typed_distance(pred: TypedLatent, target: TypedLatent, mask: Tensor,
                    equivariant: bool, typed: bool = True, masks: dict | None = None,
-                   kinds: tuple[str, ...] = ('sem', 'eq', 'circ', 'dir', 'frame')):
-    """Per-kind distances, each normalized to O(1) and averaged over valid
-    tokens; kinds that rotate with the world (eq, dir, frame) only when the
-    context provides a frame."""
-    if not bool(mask.any()):
-        return pred.sem.sum()*0, {"valid_targets": 0}
+                   kinds: tuple[str, ...] = ('sem', 'eq', 'circ', 'dir', 'frame'),
+                   segment: Tensor | None = None, size: int = 1):
+    """Per-kind distances, each normalized to O(1) and averaged over each
+    record's valid tokens; kinds that rotate with the world (eq, dir, frame)
+    only when the context provides a frame.
+
+    Without `segment` the result is one scalar with float diagnostics; with it
+    (record of each token) one loss per record and per-record tensors.
+    """
+    single = segment is None
+    device = pred.sem.device
+    segment = torch.zeros(len(mask), dtype=torch.long, device=device) if single else segment
+    seg = segment[mask]
     p, t = pred.index(mask), target.index(mask)
     masks = {k: m[mask] for k, m in (masks or {}).items()}
-    terms = {}
-    loss = (p.sem-t.sem).square().mean()
-    terms['sem'] = loss
+    terms, counts = {}, {}
+
+    def add(name, value, weight=None):
+        terms[name], counts[name] = segment_mean(value, seg, size, weight)
+
+    add('sem', (p.sem-t.sem).square().mean(-1))
     if equivariant and 'eq' in kinds:
         if p.v.shape[1]:
-            terms['vector'] = (p.v-t.v).square().sum(-1).mean()/3
+            add('vector', (p.v-t.v).square().sum(-1).mean(-1)/3)
         if p.t.shape[1]:
-            terms['tensor'] = (p.t-t.t).square().sum((-1, -2)).mean()/5
+            add('tensor', (p.t-t.t).square().sum((-1, -2)).mean(-1)/5)
     if 'circ' in kinds and p.circ.shape[1]:
-        terms['circ'] = (1-(p.circ*t.circ).sum(-1)).mean() if typed else \
-            (p.circ-t.circ).square().sum(-1).mean()/2
-    if equivariant and 'dir' in kinds and p.dir.shape[1]:
-        m = masks.get('dir', torch.ones(p.dir.shape[:2], dtype=torch.bool, device=p.dir.device))
-        per = (1-(p.dir*t.dir).sum(-1)) if typed else (p.dir-t.dir).square().sum(-1)/3
-        if bool(m.any()):
-            terms['dir'] = per[m].mean()
-    if equivariant and 'frame' in kinds and p.frame.shape[1]:
-        m = masks.get('frame', torch.ones(p.frame.shape[:2], dtype=torch.bool,
-                                          device=p.frame.device))
-        trace = (p.frame*t.frame).sum((-1, -2))  # tr(R_hat^T R)
-        if bool(m.any()):
-            terms['frame'] = ((3-trace)/4)[m].mean()
-    total = sum(terms.values())
-    info = {k: float(v.detach()) for k, v in terms.items()}
-    info['valid_targets'] = int(mask.sum())
-    return total, info
+        add('circ', (1-(p.circ*t.circ).sum(-1)).mean(-1) if typed else
+            (p.circ-t.circ).square().sum(-1).mean(-1)/2)
+    for kind, wanted in (('dir', 'dir'), ('frame', 'frame')):
+        x = getattr(p, kind)
+        if not (equivariant and wanted in kinds and x.shape[1]):
+            continue
+        m = masks.get(kind, torch.ones(x.shape[:2], dtype=torch.bool, device=device))
+        if kind == 'dir':
+            per = (1-(x*t.dir).sum(-1)) if typed else (x-t.dir).square().sum(-1)/3
+        else:
+            per = (3-(x*t.frame).sum((-1, -2)))/4   # tr(R_hat^T R)
+        terms[kind], counts[kind] = _masked_term(per, m, seg, size)
+    # The zero-weight graph term keeps an all-masked loss differentiable.
+    total = sum(terms.values())+pred.sem.sum()*0
+    valid = counts['sem']
+    if not single:
+        return total, {**terms, 'counts': counts, 'valid_targets': valid}
+    if not bool(valid[0] > 0):
+        return total[0], {"valid_targets": 0}
+    info = {k: float(v[0].detach()) for k, v in terms.items() if bool(counts[k][0] > 0)}
+    info['valid_targets'] = int(valid[0])
+    return total[0], info
 
 
 def circular_floor(z: Tensor, minimum: float = 0.1) -> Tensor:

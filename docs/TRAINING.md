@@ -53,7 +53,7 @@ torchrun --standalone --nproc_per_node=4 -m protein_jepa.cli train \
   --config configs/cueq_gpu.yaml --manifest data/manifest.jsonl --output runs/ddp
 ```
 
-현재 batch_size는 **rank당 protein 수**다. Variable-length records를 list microbatch로 처리하므로 길이에 맞는 padding batch optimization은 아직 없다. 각 rank는 서로 다른 crop/mask를 sample하며 DDP가 gradient를 평균한다.
+현재 batch_size는 **rank당 protein 수**다. microbatch 안에서 같은 task의 sample들은 하나의 disjoint-union batch로 묶여 한 번에 계산된다. graph edge는 record 안에만 생기고, Transformer와 predictor attention은 record별 padding으로 서로를 보지 않으며, loss와 진단값은 record별로 계산한다. 따라서 결과는 sample을 하나씩 계산한 것과 같고(`test_packed_group_equals_separate_samples`), batch가 클수록 GPU 처리량이 오른다. task가 9개이므로 task당 여러 sample이 모이도록 batch를 수십 단위로 잡아야 효과가 있다(batch 72에서 35.9 crops/s, [측정](../reports/batching/README.md)). 각 rank는 서로 다른 crop/mask를 sample하며 DDP가 gradient를 평균한다.
 
 Regularizer 통계는 rank-local이다. 전역 batch의 variance/covariance를 계산하는 distributed regularizer와 같지 않다. 두 rank의 CPU/Gloo smoke 실행은 검증했다. CUDA/NCCL 및 실제 Slurm submission은 검증하지 않았다.
 

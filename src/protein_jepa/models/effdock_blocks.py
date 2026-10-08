@@ -289,7 +289,7 @@ class EffDockInteractionBlock(nn.Module):
                 msg = channel_scale(msg, 1+0.5*self.radial_out(trunk).tanh(), self.dims)
             msg = self.message_act(msg)
             inv = normed.invariant()
-            features = [trunk, inv[src], inv[dst]]
+            features = [trunk, inv.index_select(0, src), inv.index_select(0, dst)]
             if self.directional:
                 features += [axis_projections(normed.index(src), graph.direction),
                              axis_projections(normed.index(dst), graph.direction)]

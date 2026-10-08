@@ -147,3 +147,18 @@ def test_crop_stays_in_observed_part_of_the_chain():
     assert min(fractions(0.))<.5                         # the old uniform draw did not
     whole=random_crop(rec,[64],torch.Generator().manual_seed(0),.5)
     assert len(whole)==len(rec)                          # short chains are used whole
+
+
+def test_packed_graph_ties_do_not_depend_on_other_records():
+    """Equidistant neighbours (a straight CA line) must resolve the same way
+    alone and packed next to a longer record (different padded width)."""
+    from protein_jepa.data.graphs import make_graph
+    line=lambda n:torch.stack((torch.arange(n,dtype=torch.float32)*3.0,torch.zeros(n),torch.zeros(n)),-1)
+    empty=torch.empty(2,0,dtype=torch.long)
+    a,b=line(4),line(9)+100
+    alone=make_graph(a,torch.arange(4),torch.arange(4),empty,3.1,1)
+    x=torch.cat((a,b)); ids=torch.arange(13)
+    packed=make_graph(x,ids,ids,empty,3.1,1,batch=torch.tensor([0]*4+[1]*9))
+    mine=packed.edge_index[:,packed.edge_index[1]<4]
+    assert torch.equal(mine,alone.edge_index)
+    assert bool((packed.edge_index[0]<4).eq(packed.edge_index[1]<4).all())

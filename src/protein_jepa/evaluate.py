@@ -25,16 +25,18 @@ def evaluate(checkpoint_path, manifest, output, split='val', max_records=32, dev
     model.load_state_dict(payload['model'])
     gen=torch.Generator().manual_seed(training.seed+90001)
     metrics=defaultdict(list)
+    pairs=[]
     for i in range(min(max_records,len(data))):
         record=random_crop(data[i],training.crop_lengths,gen,training.crop_min_observed).to(device)
         for task in training.tasks:
-            observation=make_observation(record,task,training.mask_fraction,gen,
-                                         training.mask_blocks,training.mask_mode,
-                                         training.mask_min_span)
-            with torch.no_grad():
-                loss,info,_=model.task_loss(record,observation,training)
-            if info['valid_targets']:
-                metrics[task].append(float(loss))
+            pairs.append((record,make_observation(record,task,training.mask_fraction,gen,
+                                                  training.mask_blocks,training.mask_mode,
+                                                  training.mask_min_span)))
+    with torch.no_grad():
+        results=model.sample_losses(pairs,training,16)
+    for (_,observation),(loss,info,_) in zip(pairs,results):
+        if info['valid_targets']:
+            metrics[observation.task_name].append(float(loss))
     summary={name:{'mean_pretext_loss':sum(vals)/len(vals),'records':len(vals)}
              for name,vals in metrics.items()}
     result={'split':split,'checkpoint_step':payload['step'],

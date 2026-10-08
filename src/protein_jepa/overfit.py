@@ -41,8 +41,7 @@ def evaluate_pairs(model: ProteinJEPA, pairs, train_cfg: TrainConfig) -> dict:
     was_training = model.training
     model.eval()
     by_task, top1, chance, scalars = defaultdict(list), defaultdict(list), defaultdict(list), []
-    for record, observation in pairs:
-        loss, info, inputs = model.task_loss(record, observation, train_cfg)
+    for (_, observation), (loss, info, inputs) in zip(pairs, model.sample_losses(pairs, train_cfg, 16)):
         by_task[observation.task_name].append(float(loss))
         if 'node_top1' in info:
             top1[observation.task_name].append(info['node_top1'])

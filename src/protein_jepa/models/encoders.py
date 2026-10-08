@@ -6,6 +6,7 @@ from torch import nn, Tensor
 from ..config import ModelConfig
 from ..data.constants import MASK, CLS, ATOM_ELEMENT, ATOM_ID
 from ..data.records import ProteinRecord
+from ..data.batch import RecordBatch, pack, padded_layout, to_padded
 from ..data.graphs import atom_bonds, make_graph, residue_graph, BB_ATOM, SC_ATOM
 from ..geometry.features import backbone_features, chi_features
 from ..geometry.primitives import normalize
@@ -37,12 +38,36 @@ def position_encoding(position: Tensor, width: int):
     return torch.cat((phase.sin(), phase.cos()), -1)[:, :width]
 
 
+def any_per_record(valid: Tensor, batch: Tensor, size: int) -> Tensor:
+    return torch.zeros(size, dtype=torch.long, device=valid.device).index_add_(
+        0, batch, valid.long()) > 0
+
+
+def run_transformer(transformer: nn.Module, x: Tensor, cls: Tensor, record: RecordBatch,
+                    key_padding: Tensor | None = None) -> tuple[Tensor, Tensor]:
+    """One CLS + residue sequence per record, padded across the batch.
+
+    Padded positions are excluded as keys, so each record sees only itself.
+    Returns per-residue outputs [N, D] and per-record CLS outputs [B, D].
+    """
+    layout = padded_layout(record.batch, record.size)
+    real = layout >= 0
+    seqs = torch.cat((cls.expand(record.size, 1, -1), to_padded(x, layout)), 1)
+    pad = torch.cat((real.new_zeros(record.size, 1), ~real), 1)
+    if key_padding is not None:
+        pad = pad | torch.cat((key_padding.new_zeros(record.size, 1),
+                               key_padding[layout.clamp_min(0)] & real), 1)
+    h = transformer(seqs, src_key_padding_mask=pad if bool(pad.any()) else None)
+    nodes = h.new_zeros(len(x), h.shape[-1]).index_copy(0, layout[real], h[:, 1:][real])
+    return nodes, h[:, 0]
+
+
 @dataclass
 class EncodedView:
     nodes: Fiber
     node_valid: Tensor
-    global_state: Fiber
-    global_valid: bool
+    global_state: Fiber          # one state per record of the batch
+    global_valid: Tensor         # [B] bool
     atoms: Fiber | None = None
     atom_residue: Tensor | None = None
     atom_slot: Tensor | None = None
@@ -59,18 +84,18 @@ class SequenceEncoder(nn.Module):
         self.transformer = nn.TransformerEncoder(layer, cfg.sequence_layers, enable_nested_tensor=False)
         self.project = nn.Linear(cfg.sequence_width, cfg.scalar)
 
-    def forward(self, record: ProteinRecord, visible: Tensor):
-        token = torch.where(visible, record.seq, record.seq.new_full(record.seq.shape, MASK))
-        token = torch.cat((token.new_tensor([CLS]), token))
-        x = self.embedding(token)
-        pos = torch.cat((record.seq_pos.new_zeros(1), record.seq_pos))
-        x = x + position_encoding(pos, self.cfg.sequence_width)
-        h = self.project(self.transformer(x[None])[0])
+    def forward(self, record: RecordBatch, visible: Tensor):
+        width = self.cfg.sequence_width
+        symbols = torch.where(visible, record.seq, record.seq.new_full(record.seq.shape, MASK))
+        x = self.embedding(symbols) + position_encoding(record.seq_pos, width)
+        cls = self.embedding(symbols.new_tensor([CLS])) + position_encoding(symbols.new_zeros(1), width)
+        h, top = run_transformer(self.transformer, x, cls, record)
         nodes = Fiber.zeros(len(record), self.cfg.dims, h)
-        nodes.s = h[1:]
-        global_h = Fiber.zeros(1, self.cfg.dims, h)
-        global_h.s = h[:1]
-        return EncodedView(nodes, visible.clone(), global_h, bool(visible.any()))
+        nodes.s = self.project(h)
+        global_h = Fiber.zeros(record.size, self.cfg.dims, h)
+        global_h.s = self.project(top)
+        return EncodedView(nodes, visible.clone(), global_h,
+                           any_per_record(visible, record.batch, record.size))
 
 
 class InternalEncoder(nn.Module):
@@ -100,15 +125,13 @@ class InternalEncoder(nn.Module):
             valid &= node_visible
             x = torch.where(node_visible[:, None], x, torch.zeros_like(x))
         x = self.stem(x) + position_encoding(record.seq_pos, self.cfg.sequence_width)
-        x = torch.cat((self.cls, x), 0)[None]
         # Invalid rows may receive context, but may not leak through keys or readout.
-        padding = torch.cat((valid.new_zeros(1), ~valid))[None]
-        h = self.out(self.transformer(x, src_key_padding_mask=padding)[0])
+        h, top = run_transformer(self.transformer, x, self.cls[None], record, key_padding=~valid)
         nodes = Fiber.zeros(len(record), self.cfg.dims, h)
-        nodes.s = h[1:]
-        global_h = Fiber.zeros(1, self.cfg.dims, h)
-        global_h.s = h[:1]
-        return EncodedView(nodes, valid, global_h, bool(valid.any()))
+        nodes.s = self.out(h)
+        global_h = Fiber.zeros(record.size, self.cfg.dims, h)
+        global_h.s = self.out(top)
+        return EncodedView(nodes, valid, global_h, any_per_record(valid, record.batch, record.size))
 
 
 class AtomStem(nn.Module):
@@ -123,7 +146,7 @@ class AtomStem(nn.Module):
         self.register_buffer("elements", torch.tensor(ATOM_ELEMENT))
         self.pool_score = nn.Linear(cfg.scalar, 1)
 
-    def forward(self, record: ProteinRecord, visible: Tensor):
+    def forward(self, record: RecordBatch, visible: Tensor):
         mask = visible & record.present
         selector = torch.zeros_like(mask)
         if self.backbone_only:
@@ -150,7 +173,8 @@ class AtomStem(nn.Module):
             local = self.backbone_only or self.cfg.sc_context == "local"
             graph = make_graph(x, ri, record.seq_pos, bonds, self.cfg.radius_atom,
                                self.cfg.max_neighbors, local_only=local,
-                               node_kind=torch.full_like(ri, BB_ATOM if self.backbone_only else SC_ATOM))
+                               node_kind=torch.full_like(ri, BB_ATOM if self.backbone_only else SC_ATOM),
+                               batch=record.batch[ri])
             for layer in self.layers:
                 atom = layer(atom, graph)
         weight = self.pool_score(atom.s).squeeze(-1).sigmoid()
@@ -182,7 +206,8 @@ class BackboneEncoder(nn.Module):
             h = layer(h, graph)
         nodes = scatter_fiber(h, ids, len(record), mean=False)
         atoms = atoms + self.atom_feedback(nodes.index(ri))
-        return EncodedView(nodes, valid, self.readout(nodes, valid), bool(valid.any()), atoms, ri, ai)
+        return EncodedView(nodes, valid, self.readout(nodes, valid, record.batch, record.size),
+                           any_per_record(valid, record.batch, record.size), atoms, ri, ai)
 
 
 class SidechainEncoder(nn.Module):
@@ -193,7 +218,8 @@ class SidechainEncoder(nn.Module):
 
     def forward(self, record, visible):
         atoms, nodes, valid, ri, ai = self.stem(record, visible)
-        return EncodedView(nodes, valid, self.readout(nodes, valid), bool(valid.any()), atoms, ri, ai)
+        return EncodedView(nodes, valid, self.readout(nodes, valid, record.batch, record.size),
+                           any_per_record(valid, record.batch, record.size), atoms, ri, ai)
 
 
 class AllAtomFusion(nn.Module):
@@ -215,7 +241,7 @@ class AllAtomFusion(nn.Module):
         atom = atom + self.feedback(initial.index(ri))
         graph = make_graph(record.xyz[ri, ai], ri, record.seq_pos,
                            atom_bonds(record, ri, ai, False), self.cfg.radius_atom, self.cfg.max_neighbors,
-                           node_kind=torch.where(ai < 4, BB_ATOM, SC_ATOM))
+                           node_kind=torch.where(ai < 4, BB_ATOM, SC_ATOM), batch=record.batch[ri])
         for layer in self.atom_layers:
             atom = layer(atom, graph)
         nodes = scatter_fiber(atom, ri, len(record)) + initial
@@ -226,7 +252,8 @@ class AllAtomFusion(nn.Module):
         # Atom output = state after the inter-residue atom layers, which also
         # feeds the residue output. A post-hoc residue->atom map would exist
         # only on the teacher target path and therefore never be trained.
-        return EncodedView(nodes, valid, self.readout(nodes, valid), bool(valid.any()), atom, ri, ai)
+        return EncodedView(nodes, valid, self.readout(nodes, valid, record.batch, record.size),
+                           any_per_record(valid, record.batch, record.size), atom, ri, ai)
 
 
 class MultiViewEncoder(nn.Module):
@@ -240,9 +267,12 @@ class MultiViewEncoder(nn.Module):
         self.bb_internal = InternalEncoder(cfg, sidechain=False)
         self.chi = InternalEncoder(cfg, sidechain=True)
 
-    def forward(self, record: ProteinRecord, views: tuple[str, ...] | list[str],
+    def forward(self, record: ProteinRecord | RecordBatch, views: tuple[str, ...] | list[str],
                 atom_visible: Tensor | None = None, seq_visible: Tensor | None = None,
                 internal_visible: Tensor | None = None) -> dict[str, EncodedView]:
+        """Encode one record or a packed batch; node outputs are residue-packed
+        and global outputs hold one state per record."""
+        record = pack(record)
         allowed = {"seq", "bb", "sc", "aa", "bb_internal", "chi"}
         if not set(views) <= allowed:
             raise ValueError(f"Unknown views: {set(views)-allowed}")

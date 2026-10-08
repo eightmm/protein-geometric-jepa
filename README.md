@@ -275,7 +275,7 @@ protein-jepa train --config configs/effdock_cueq_gpu.yaml \
   --manifest data/train.jsonl --output runs/effdock-pretrain
 ```
 
-`sequence_map`은 원래 서열의 결손 위치까지 명시합니다. 없으면 `observed_order_unverified`이며 학습은 기본적으로 거부합니다. [DATA.md](docs/DATA.md)의 canonical indexing과 cluster-disjoint split 계약을 따르세요. Manifest 작성, 대규모 학습 및 downstream 검증을 자동 완료한 상태는 아닙니다.
+같은 task의 sample들은 하나의 disjoint-union batch로 묶어 계산합니다. 결과는 sample별 계산과 같고, task당 여러 sample이 모이도록 batch를 수십 단위로 잡으면 GPU 처리량이 오릅니다(batch 72에서 이전 대비 6.4배, [측정](reports/batching/README.md)). `sequence_map`은 원래 서열의 결손 위치까지 명시합니다. 없으면 `observed_order_unverified`이며 학습은 기본적으로 거부합니다. [DATA.md](docs/DATA.md)의 canonical indexing과 cluster-disjoint split 계약을 따르세요. Manifest 작성, 대규모 학습 및 downstream 검증을 자동 완료한 상태는 아닙니다.
 
 ## 검증과 ablation
 

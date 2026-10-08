@@ -113,9 +113,9 @@ def test_task_loss_normalizes_global_target_against_crop_nodes(model,protein,mon
     import protein_jepa.models.jepa as jepa
     calls=[]
     original=jepa.make_typed_target
-    def spy(z,valid,floor=.1,instance=True,reference=None,eps=1e-6):
+    def spy(z,valid,floor=.1,instance=True,reference=None,**kw):
         calls.append((len(z.sem),reference))
-        return original(z,valid,floor,instance,reference,eps)
+        return original(z,valid,floor,instance,reference,**kw)
     monkeypatch.setattr(jepa,'make_typed_target',spy)
     obs=make_observation(protein,'bb_infill',.3,torch.Generator().manual_seed(3))
     model([(protein,obs)],TrainConfig())
@@ -158,3 +158,51 @@ def test_overfit_patience_stops_a_plateaued_run(tiny_cfg):
     result=overfit(tiny_cfg,tc,[synthetic_record(16,1)],50,0.0,2,'cpu',0,log=lambda *_:None,
                    patience=2,lr_schedule='cosine')
     assert result['converged_at_step']==4 and result['history'][-1]['step']==4
+
+
+@pytest.mark.parametrize('task',list(TASKS))
+def test_packed_group_equals_separate_samples(model,task):
+    """Packing records of different lengths must not mix them: per-record
+    losses and diagnostics equal the one-record computation."""
+    from protein_jepa.data.synthetic import synthetic_record, sequence_record
+    # sequence_record has no coordinates: structural contexts are empty and
+    # its predictions collapse, which retrieval must score identically.
+    records=[synthetic_record(n,s) for n,s in ((14,1),(19,2),(9,3))]+[sequence_record('GGAG')]
+    obs=[make_observation(r,task,.3,torch.Generator().manual_seed(i),2,min_span=2)
+         for i,r in enumerate(records)]
+    cfg=TrainConfig()
+    with torch.no_grad():
+        packed=model.group_loss(records,obs,cfg)
+        refs=[model.task_loss(r,o,cfg) for r,o in zip(records,obs)]
+    for (loss,info,inputs),(ref_loss,ref_info,ref_inputs) in zip(packed,refs):
+        torch.testing.assert_close(loss,ref_loss,atol=2e-5,rtol=2e-5)
+        assert info.keys()==ref_info.keys()
+        for key,value in ref_info.items():
+            if isinstance(value,float):
+                assert abs(info[key]-value)<=2e-5*(1+abs(value)),key
+            else:
+                assert info[key]==value,key
+        assert inputs.keys()==ref_inputs.keys()
+        for name,(sem,circ) in ref_inputs.items():
+            torch.testing.assert_close(inputs[name][0],sem,atol=2e-5,rtol=2e-5)
+
+
+def test_group_without_valid_targets_matches_single(model,protein):
+    """A group whose targets are all unobserved must not crash retrieval."""
+    present=torch.zeros_like(protein.present)
+    empty=replace(protein,present=present)
+    obs=make_observation(empty,'bb_infill',.3,torch.Generator().manual_seed(2),min_span=2)
+    (loss,info,_),=model.group_loss([empty],[obs],TrainConfig())
+    ref_loss,ref_info,_=model.task_loss(empty,obs,TrainConfig())
+    assert float(loss.detach())==float(ref_loss.detach())==0 and info['valid_targets']==0 and 'node_top1' not in info
+
+
+def test_retrieval_of_a_record_ignores_other_records():
+    """Collapse detection must use only the record's own tokens (review repro)."""
+    from protein_jepa.models.jepa import node_retrieval
+    pred=torch.tensor([4,3,2,1.0002,.9998])[:,None]
+    target=torch.tensor([1,0,-1,1,-1.])[:,None]
+    valid=torch.ones(5,dtype=torch.bool)
+    packed,_=node_retrieval(pred,target,valid,torch.tensor([0,0,0,1,1]),2)
+    alone,_=node_retrieval(pred[3:],target[3:],valid[3:],torch.zeros(2,dtype=torch.long),1)
+    assert float(packed[1])==float(alone[0])

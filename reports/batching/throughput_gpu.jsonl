@@ -1,0 +1,5 @@
+{"code": "before (f967cb7, per-sample loop)", "batch": 4, "s_per_step": 0.718, "crops_per_s": 5.6, "peak_gb": 2.02}
+{"code": "before (f967cb7, per-sample loop)", "batch": 18, "s_per_step": 3.101, "crops_per_s": 5.8, "peak_gb": 4.55}
+{"code": "packed per task", "batch": 4, "s_per_step": 0.642, "crops_per_s": 6.2, "peak_gb": 2.04}
+{"code": "packed per task", "batch": 36, "s_per_step": 1.851, "crops_per_s": 19.4, "peak_gb": 9.19}
+{"code": "packed per task", "batch": 72, "s_per_step": 2.006, "crops_per_s": 35.9, "peak_gb": 15.54}

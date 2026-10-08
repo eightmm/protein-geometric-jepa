@@ -1,11 +1,12 @@
 """Online encoder, EMA teacher encoder and JEPA predictor. No coordinate reconstruction."""
 from copy import deepcopy
 import torch
-from torch import nn
+from torch import nn, Tensor
 from ..config import ModelConfig, TrainConfig
 from ..objectives.losses import latent_distance, regularize_latents
 from ..objectives.tasks import Observation
 from .encoders import MultiViewEncoder
+from ..data.batch import pack, padded_layout, to_padded
 from .predictors import (CrossViewPredictor, ContextLatent, VIEW_NAMES, make_target,
                          topology_atoms, low_rms_fraction)
 from .latents import (TypedLatentHead, latent_spec, make_typed_target, eq_reference,
@@ -13,22 +14,36 @@ from .latents import (TypedLatentHead, latent_spec, make_typed_target, eq_refere
 
 
 @torch.no_grad()
-def node_retrieval(pred, target, valid) -> dict:
-    """Share of masked residues whose prediction is closest (centred cosine,
-    invariant scalars) to its OWN target among all masked targets; chance 1/n.
+def node_retrieval(pred: Tensor, target: Tensor, valid: Tensor, segment: Tensor,
+                   size: int) -> tuple[Tensor, Tensor]:
+    """Per record: share of masked residues whose prediction is closest
+    (centred cosine, invariant scalars) to its OWN target among that record's
+    masked targets; chance 1/n. Returns (top1 [B], n [B]).
 
     Loss alone cannot separate learning from collapse: predicting the common
     mean lowers MSE but scores chance here. Centring over the masked set
     removes the shared component that dominates untrained encoder states.
     """
-    n = int(valid.sum())
-    if n < 2:
-        return {}
-    p, t = pred.sem[valid], target.sem[valid]
-    p = torch.nn.functional.normalize(p-p.mean(0), dim=-1)
-    t = torch.nn.functional.normalize(t-t.mean(0), dim=-1)
-    top1 = (p @ t.T).argmax(-1) == torch.arange(n, device=p.device)
-    return {"node_top1": float(top1.float().mean()), "node_chance": 1/n}
+    seg = segment[valid]
+    layout = padded_layout(seg, size)
+    real = layout >= 0
+    n = real.sum(-1)
+    if not layout.shape[1]:
+        return n.to(pred.dtype), n
+    p, t = to_padded(pred[valid], layout), to_padded(target[valid], layout)
+    w = real[..., None].to(p.dtype)
+
+    def centred(x):
+        mean = (x*w).sum(1, keepdim=True)/n.clamp_min(1)[:, None, None]
+        x = (x-mean)*w   # padding stays zero, so it never sets the scale
+        # A collapsed record leaves only rounding noise after centring; cosine
+        # would amplify it into an arbitrary score, so it scores chance (1/n).
+        scale = mean.norm(dim=-1, keepdim=True)+x.norm(dim=-1, keepdim=True).amax(1, keepdim=True)
+        x = x.masked_fill(x.norm(dim=-1, keepdim=True) <= 1e-4*scale, 0)
+        return torch.nn.functional.normalize(x, dim=-1)
+    sim = torch.einsum('bid,bjd->bij', centred(p), centred(t)).masked_fill(~real[:, None, :], -torch.inf)
+    hit = (sim.argmax(-1) == torch.arange(layout.shape[1], device=p.device)) & real
+    return hit.sum(-1)/n.clamp_min(1), n
 
 
 class TargetStack(nn.Module):
@@ -50,8 +65,8 @@ class TargetStack(nn.Module):
         for name, view in encoded.items():
             index = torch.where(view.node_valid)[0]
             nodes = self.heads[name](view.nodes.index(index))
-            glob = self.heads[name](view.global_state) if view.global_valid else None
-            out[name] = ContextLatent(nodes, index, glob)
+            out[name] = ContextLatent(nodes, index, self.heads[name](view.global_state),
+                                      view.global_valid)
         return out
 
 
@@ -84,40 +99,81 @@ class ProteinJEPA(nn.Module):
         return self.online.context(encoded)
 
     def task_loss(self, record, observation: Observation, train_cfg: TrainConfig):
-        spec = observation.spec
+        """One sample: (loss, info, regularizer inputs)."""
+        return self.sample_losses([(record, observation)], train_cfg)[0]
+
+    def sample_losses(self, records_and_observations, train_cfg: TrainConfig,
+                      group_size: int | None = None) -> list[tuple]:
+        """Per-sample (loss, info, regularizer inputs) in input order.
+
+        Samples of the same task share context/target views, so each task's
+        samples run as one packed batch (at most `group_size` per batch).
+        """
+        groups = {}
+        for i, (_, observation) in enumerate(records_and_observations):
+            groups.setdefault(observation.task_name, []).append(i)
+        out = [None]*len(records_and_observations)
+        for members in groups.values():
+            step = group_size or len(members)
+            for start in range(0, len(members), step):
+                chunk = members[start:start+step]
+                results = self.group_loss([records_and_observations[i][0] for i in chunk],
+                                          [records_and_observations[i][1] for i in chunk], train_cfg)
+                for i, result in zip(chunk, results):
+                    out[i] = result
+        return out
+
+    def group_loss(self, records, observations, train_cfg: TrainConfig) -> list[tuple]:
+        """Samples of ONE task as a packed batch; per-record statistics,
+        losses and diagnostics equal the separate per-sample computation."""
+        spec = observations[0].spec
+        if any(o.task_name != observations[0].task_name for o in observations):
+            raise ValueError("A group holds one task.")
         typed = self.cfg.latent_typing == "typed"
-        context = self.context_latents(record, spec.context, observation.atom_visible,
-                                       observation.seq_visible)
+        batch = pack(records)
+        size, owner = batch.size, batch.batch
+        atom_visible = torch.cat([o.atom_visible for o in observations])
+        seq_visible = torch.cat([o.seq_visible for o in observations])
+        target_residues = torch.cat([o.target_residues for o in observations])
+        context = self.context_latents(batch, spec.context, atom_visible, seq_visible)
         with torch.no_grad():
-            target = self.teacher.encoder(record, (spec.target,))[spec.target]
+            target = self.teacher.encoder(batch, (spec.target,))[spec.target]
             head = self.teacher.heads[spec.target]
             target_nodes_raw = head(target.nodes)
             target_global_raw = head(target.global_state)
         # Mask tokens sit at the OBSERVATION's target residues and atom tokens
         # follow the visible-sequence topology; teacher validity/presence only
         # filters the loss, so hidden atom presence never shapes any query.
-        query = torch.where(observation.target_residues)[0]
+        query = torch.where(target_residues)[0]
         atom_residues = atom_slots = None
         if spec.atom_loss and target.atoms is not None:
             atom_residues, atom_slots = topology_atoms(
-                record.seq, observation.seq_visible, query, observation.task_name == "sc_infill")
-        prediction = self.predictor(context, record.seq_pos, spec.target, query,
-                                    atom_residues, atom_slots)
+                batch.seq, seq_visible, query, observations[0].task_name == "sc_infill")
+        prediction = self.predictor(context, batch.seq_pos, spec.target, query,
+                                    atom_residues, atom_slots, owner, size)
         floor = train_cfg.target_floor
+        every = torch.arange(size, device=owner.device)
         with torch.no_grad():
-            node_target, kind_masks = make_typed_target(target_nodes_raw, target.node_valid, floor)
+            node_target, kind_masks = make_typed_target(target_nodes_raw, target.node_valid, floor,
+                                                        batch=owner, size=size)
             node_target = node_target.index(query)
             kind_masks = {k: m[query] for k, m in kind_masks.items()}
             global_target, _ = make_typed_target(
                 target_global_raw, None, floor, instance=False,
-                reference=eq_reference(target_nodes_raw, target.node_valid))
-        node_loss, info = typed_distance(prediction.nodes, node_target, target.node_valid[query],
-                                         spec.equivariant, typed, kind_masks)
-        observed = any(v.global_state is not None or len(v.index) for v in context.values())
-        global_mask = torch.tensor([target.global_valid and observed], device=record.xyz.device)
+                reference=eq_reference(target_nodes_raw, target.node_valid, owner, size),
+                batch=every, size=size)
+        node_valid = target.node_valid[query]
+        node_loss, terms = typed_distance(prediction.nodes, node_target, node_valid,
+                                          spec.equivariant, typed, kind_masks, segment=owner[query],
+                                          size=size)
+        observed = torch.zeros(size, dtype=torch.bool, device=owner.device)
+        for latent in context.values():
+            observed |= latent.global_valid
+            observed[owner[latent.index]] = True
         # Global latents stay invariant semantic + irreps; never circles/frames.
-        global_loss, _ = typed_distance(prediction.global_state, global_target, global_mask,
-                                        spec.equivariant, typed, kinds=('sem', 'eq'))
+        global_loss, _ = typed_distance(prediction.global_state, global_target,
+                                        target.global_valid & observed, spec.equivariant, typed,
+                                        kinds=('sem', 'eq'), segment=every, size=size)
         atom_loss = node_loss*0
         if atom_residues is not None and len(atom_residues) and len(target.atom_residue):
             # Align topology queries with observed teacher atoms (key = residue*37+slot);
@@ -128,30 +184,54 @@ class ProteinJEPA(nn.Module):
             where = torch.searchsorted(keys[order], wanted).clamp_max(len(keys)-1)
             observed_atom = keys[order][where] == wanted
             with torch.no_grad():
-                atom_target = make_target(target.atoms, None, floor,
-                                          instance=True).index(order[where])
-            atom_loss, _ = latent_distance(prediction.atoms, atom_target, observed_atom, True)
+                atom_target = make_target(target.atoms, None, floor, instance=True,
+                                          batch=owner[target.atom_residue],
+                                          size=size).index(order[where])
+            atom_loss, _ = latent_distance(prediction.atoms, atom_target, observed_atom, True,
+                                           segment=owner[atom_residues], size=size)
+        loss = node_loss + train_cfg.global_weight*global_loss + train_cfg.atom_weight*atom_loss
+        top1, retrieved = node_retrieval(prediction.nodes.sem, node_target.sem, node_valid,
+                                         owner[query], size)
+        low = low_rms_fraction(target.nodes, target.node_valid, floor, owner, size)
         # Online context latents BEFORE target normalization: layer-normed
         # scalars sum to zero, which would make a covariance penalty fight the norm.
-        regularizer_inputs = {name: (z.nodes.sem, z.nodes.circ) for name, z in context.items()
-                              if len(z.index)}
-        loss = node_loss + train_cfg.global_weight*global_loss + train_cfg.atom_weight*atom_loss
-        info.update(target_low_rms=low_rms_fraction(target.nodes, target.node_valid, floor),
-                    **node_retrieval(prediction.nodes, node_target, target.node_valid[query]))
-        info.update(task=observation.task_name, node_loss=float(node_loss.detach()),
-                    global_loss=float(global_loss.detach()), atom_loss=float(atom_loss.detach()))
-        return loss, info, regularizer_inputs
+        regularizer_inputs = [{} for _ in range(size)]
+        for name, z in context.items():
+            counts = torch.bincount(owner[z.index], minlength=size).tolist()
+            for b, (sem, circ) in enumerate(zip(z.nodes.sem.split(counts), z.nodes.circ.split(counts))):
+                if len(sem):
+                    regularizer_inputs[b][name] = (sem, circ)
+        # One device->host transfer for every per-record diagnostic.
+        counts = terms.pop('counts')
+        terms.pop('valid_targets')
+        names = list(terms)
+        table = torch.stack([terms[k].detach() for k in names]+[counts[k] for k in names]+[
+            node_loss.detach(), global_loss.detach(), atom_loss.detach(), top1, retrieved.float(),
+            low]).T.tolist()
+        results = []
+        k = len(names)
+        for b, row in enumerate(table):
+            info = {"valid_targets": int(row[k+names.index('sem')])}
+            if info["valid_targets"]:
+                info.update({name: row[i] for i, name in enumerate(names) if row[k+i] > 0})
+            node, glob, atom, hit, n, low_b = row[2*k:]
+            info.update(target_low_rms=low_b, task=observations[b].task_name, node_loss=node,
+                        global_loss=glob, atom_loss=atom)
+            if n >= 2:
+                info.update(node_top1=hit, node_chance=1/n)
+            results.append((loss[b], info, regularizer_inputs[b]))
+        return results
 
     def forward(self, records_and_observations, train_cfg: TrainConfig):
         by_task, logs, groups = {}, [], {}
-        for record, observation in records_and_observations:
-            loss, info, inputs = self.task_loss(record, observation, train_cfg)
+        if not records_and_observations:
+            raise ValueError("Empty microbatch.")
+        results = self.sample_losses(records_and_observations, train_cfg)
+        for (_, observation), (loss, info, inputs) in zip(records_and_observations, results):
             by_task.setdefault(observation.task_name, []).append(loss)
             logs.append(info)
             for name, latent in inputs.items():
                 groups.setdefault(name, []).append(latent)
-        if not by_task:
-            raise ValueError("Empty microbatch.")
         # Mean within each task, then across tasks: a mixed microbatch is not
         # dominated by whichever task happens to have more samples.
         loss = torch.stack([torch.stack(v).mean() for v in by_task.values()]).mean()

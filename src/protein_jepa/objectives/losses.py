@@ -2,21 +2,30 @@
 import torch
 from torch import Tensor
 from ..models.fibers import Fiber
+from ..data.batch import segment_mean
 
 
-def latent_distance(pred: Fiber, target: Fiber, mask: Tensor, equivariant: bool = False):
-    if not bool(mask.any()):
-        return pred.s.sum()*0, {"valid_targets": 0}
+def latent_distance(pred: Fiber, target: Fiber, mask: Tensor, equivariant: bool = False,
+                    segment: Tensor | None = None, size: int = 1):
+    """Fiber distance averaged over valid tokens: one scalar with float
+    diagnostics, or one value per record with `segment` (record of each token)."""
+    single = segment is None
+    segment = torch.zeros(len(mask), dtype=torch.long, device=mask.device) if single else segment
+    seg = segment[mask]
     p, t = pred.index(mask), target.index(mask)
-    loss = (p.s-t.s).square().mean()
-    terms = {"scalar": float(loss.detach()), "valid_targets": int(mask.sum())}
+    scalar, count = segment_mean((p.s-t.s).square().mean(-1), seg, size)
+    terms = {"scalar": scalar}
     if equivariant:
-        v = (p.v-t.v).square().sum(-1).mean()/3
+        terms["vector"] = segment_mean((p.v-t.v).square().sum(-1).mean(-1)/3, seg, size)[0]
         # Cartesian STF Frobenius norm corresponds to five independent components.
-        q = (p.t-t.t).square().sum((-1, -2)).mean()/5
-        loss = loss+v+q
-        terms.update(vector=float(v.detach()), tensor=float(q.detach()))
-    return loss, terms
+        terms["tensor"] = segment_mean((p.t-t.t).square().sum((-1, -2)).mean(-1)/5, seg, size)[0]
+    loss = sum(terms.values())+pred.s.sum()*0
+    if not single:
+        return loss, {**terms, "valid_targets": count}
+    if not bool(count[0] > 0):
+        return loss[0], {"valid_targets": 0}
+    return loss[0], {**{k: float(v[0].detach()) for k, v in terms.items()},
+                     "valid_targets": int(count[0])}
 
 
 def regularize_latents(latents: list[Tensor], max_per_sample=32):
