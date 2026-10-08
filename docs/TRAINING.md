@@ -65,7 +65,7 @@ MANIFEST=/abs/manifest.jsonl OUTDIR=/abs/runs/jepa CONFIG=configs/effdock_cueq_g
 | `batch_size` | 2 | rank당 microbatch의 protein 수 |
 | `accumulation_steps` | 1 | optimizer step 하나 = microbatch K개. DDP gradient all-reduce는 마지막 microbatch에서 한 번만 한다(`no_sync`) |
 | `pack_size` | 0 | packed group당 최대 sample 수. 0은 같은 task 전부. 작은 GPU에서 peak memory를 제한하며 sample별 loss는 바뀌지 않는다 |
-| `loader_workers` | 0 | crop·mask를 미리 만드는 background process 수(forkserver/spawn). 0은 main process에서 만든다. `train()`을 직접 부르는 script는 `if __name__ == "__main__":` guard가 필요하다 |
+| `loader_workers` | 0 | crop·mask를 미리 만드는 background process 수(spawn). 0은 main process에서 만든다. `train()`을 직접 부르는 script는 `if __name__ == "__main__":` guard가 필요하다 |
 | `dist_backend` | auto | auto는 CUDA면 nccl, CPU면 gloo. gloo + CUDA는 GPU 하나를 여러 rank가 나눠 쓰는 시험용 |
 
 최적화와 checkpoint 옵션:
@@ -79,7 +79,7 @@ MANIFEST=/abs/manifest.jsonl OUTDIR=/abs/runs/jepa CONFIG=configs/effdock_cueq_g
 
 - `--resume auto`: 출력 폴더에 `last.pt`가 있으면 이어서, 없으면 처음부터 학습한다. 재제출(requeue)된 job에 그대로 쓴다.
 - `--init-from ckpt`: weight만 불러와 step 0부터 새 optimizer로 학습한다. 모델 설정이 같아야 한다.
-- **중단 신호:** SIGTERM이나 SIGUSR1을 받으면 현재 optimizer step을 마치고 `last.pt`를 저장한 뒤 `interrupted: true`로 끝낸다. CLI는 exit code 3을 돌려준다. 여러 rank 중 하나만 신호를 받아도 모든 rank가 같은 step에서 멈춘다. 이어 학습하면 끊김 없이 돌린 것과 bit 단위로 같다(`test_stop_signal_saves_and_resumes_exactly`).
+- **중단 신호:** SIGTERM이나 SIGUSR1을 받으면 현재 optimizer step을 마치고 `last.pt`를 저장한 뒤 `interrupted: true`로 끝낸다. CLI는 exit code 3을 돌려준다. 여러 rank 중 하나만 신호를 받아도 모든 rank가 같은 step에서 멈춘다. DataLoader worker는 이 신호를 무시하므로, launcher가 process group 전체에 신호를 보내도 학습 프로세스가 step을 마치고 저장할 수 있다. CPU에서는 이어 학습한 결과가 끊김 없이 돌린 것과 bit 단위로 같다(`test_stop_signal_saves_and_resumes_exactly`, `test_group_stop_signal_with_loader_workers`). CUDA에서는 atomic 연산의 비결정성 때문에 1e-5 수준의 차이가 날 수 있다.
 - Slurm 스크립트는 종료 5분 전 SIGTERM을 받도록 설정되어 있고, 중단된 경우 스스로 requeue한 뒤 `--resume auto`로 이어 간다. torchrun은 SIGTERM을 worker에 전달하고 일정 시간 뒤 강제 종료하므로, step 하나가 그 시간 안에 끝나야 한다. **실제 Slurm 환경에서는 실행해 보지 않았다.**
 - Resume에서는 `optimizer`, `muon_momentum`, `decay_exclusions`를 바꿀 수 없다. checkpoint format 7부터 optimizer와 scheduler 상태를 목록으로 저장한다.
 

@@ -449,3 +449,47 @@ def test_stop_signal_saves_and_resumes_exactly(tiny_cfg,tmp_path):
     train(tiny_cfg,training,dataset,tmp_path/'full')
     a,b=load(tmp_path/'full'/'last.pt'),load(tmp_path/'r'/'last.pt')
     assert all(torch.equal(a['model'][k],b['model'][k]) for k in a['model'])
+
+
+def test_group_stop_signal_with_loader_workers(tmp_path):
+    """A launcher signals the whole process group (trainer + loader workers):
+    workers must survive so the trainer saves, then resume is exact."""
+    import subprocess, sys, textwrap
+    from pathlib import Path
+    script=tmp_path/'run.py'
+    script.write_text(textwrap.dedent('''
+        import os, signal, sys, json, torch
+        from dataclasses import replace
+        from protein_jepa.config import ModelConfig, TrainConfig
+        from protein_jepa.data.dataset import SyntheticDataset
+        from protein_jepa.train import train
+        class GroupSignal(SyntheticDataset):
+            def __getitem__(self, i):
+                marker = sys.argv[2]+'.sent'
+                if sys.argv[3] == 'signal' and not os.path.exists(marker):
+                    open(marker, 'w').close()
+                    os.killpg(os.getpgid(0), signal.SIGTERM)   # like torchrun/Slurm
+                return super().__getitem__(i)
+        if __name__ == '__main__':
+            cfg = ModelConfig(scalar=16, vector=4, tensor=2, sequence_width=32, sequence_layers=1,
+                              atom_layers=1, backbone_layers=1, aa_layers=1, internal_layers=1,
+                              predictor_layers=2, latent_scalar=16, latent_vector=4,
+                              latent_tensor=2, circular_channels=4)
+            tc = TrainConfig(steps=6, batch_size=1, crop_lengths=[10], threads=1, save_every=10,
+                             mask_min_span=2, loader_workers=1)
+            data = GroupSignal(3, 12, 5)
+            result = train(cfg, tc, data, sys.argv[1], resume='auto')
+            print(json.dumps({'interrupted': result['interrupted'], 'steps': result['steps']}))
+    '''))
+    env={**__import__('os').environ,'PYTHONPATH':str(Path(__file__).resolve().parents[1]/'src')}
+    def run(out,mode):
+        done=subprocess.run([sys.executable,str(script),str(out),str(tmp_path/out.name),mode],
+                            capture_output=True,text=True,env=env,start_new_session=True,timeout=600)
+        assert done.returncode==0,done.stderr[-2000:]
+        return __import__('json').loads(done.stdout.strip().splitlines()[-1])
+    first=run(tmp_path/'r','signal')
+    assert first['interrupted'] and first['steps']<6
+    assert run(tmp_path/'r','signal')['steps']==6        # auto-resume; marker prevents a second signal
+    run(tmp_path/'full','none')
+    a,b=load_checkpoint(tmp_path/'full'/'last.pt'),load_checkpoint(tmp_path/'r'/'last.pt')
+    assert all(torch.equal(a['model'][k],b['model'][k]) for k in a['model'])
