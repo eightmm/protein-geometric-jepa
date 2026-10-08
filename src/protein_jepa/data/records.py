@@ -111,8 +111,8 @@ def random_crop(record: ProteinRecord, lengths: list[int], generator: torch.Gene
     span = len(record)-k+1
     if min_observed <= 0 or span == 1:
         return record.crop(int(torch.randint(span, (), generator=generator)), k)
-    observed = torch.cat((record.present.new_zeros(1, dtype=torch.long),
-                          record.present[:, 1].long().cpu().cumsum(0)))
+    ca = record.present[:, 1].long().cpu()  # records may live on GPU; index math stays on CPU
+    observed = torch.cat((ca.new_zeros(1), ca.cumsum(0)))
     fraction = (observed[k:]-observed[:-k]).float()/k            # per start, [span]
     candidates = torch.where(fraction >= min_observed)[0]
     if len(candidates) == 0:
