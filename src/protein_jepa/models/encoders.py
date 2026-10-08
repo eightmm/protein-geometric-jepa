@@ -7,7 +7,8 @@ from ..config import ModelConfig
 from ..data.constants import MASK, CLS, ATOM_ELEMENT, ATOM_ID
 from ..data.records import ProteinRecord
 from ..data.batch import RecordBatch, pack, padded_layout, to_padded
-from ..data.graphs import atom_bonds, make_graph, residue_graph, BB_ATOM, SC_ATOM
+from ..data.graphs import (atom_bonds, make_graph, residue_graph, frame_pair_features,
+                           BB_ATOM, SC_ATOM, PAIR_FEATURES)
 from ..geometry.features import backbone_features, chi_features
 from ..geometry.primitives import normalize
 from .fibers import (Fiber, FiberDims, FiberLinear, DirectionSeed,
@@ -17,8 +18,9 @@ from .equivariant import EquivariantBlock
 
 def interaction_block(cfg: ModelConfig, stage: int, cutoff: float):
     """Stage: BB atoms=0, SC atoms=1, BB residues=2, AA atoms=3, AA residues=4."""
+    pair = PAIR_FEATURES if cfg.pair_frame_features and stage in (2, 4) else 0
     if cfg.interaction == "baseline":
-        return EquivariantBlock(cfg.dims, cfg.backend)
+        return EquivariantBlock(cfg.dims, cfg.backend, pair)
     from .effdock_blocks import EffDockInteractionBlock
     return EffDockInteractionBlock(
         cfg.dims, cfg.backend, stage=stage, cutoff=cutoff, dropout=cfg.dropout,
@@ -27,8 +29,18 @@ def interaction_block(cfg: ModelConfig, stage: int, cutoff: float):
         conditional=cfg.effdock_conditioning, dual_radial=cfg.effdock_dual_radial,
         distance_decay=cfg.effdock_distance_decay, norm_rescale=cfg.effdock_norm_rescale,
         smooth_cutoff=cfg.effdock_smooth_cutoff, directional=cfg.effdock_directional,
-        ffn=cfg.effdock_ffn, adaptive_cutoff=cfg.effdock_adaptive_cutoff,
+        ffn=cfg.effdock_ffn, adaptive_cutoff=cfg.effdock_adaptive_cutoff, pair_features=pair,
     )
+
+
+def residue_pair_graph(cfg: ModelConfig, record, valid: Tensor, visible: Tensor):
+    """Residue graph over valid residues, with frame pair features when enabled."""
+    ids, graph = residue_graph(record, valid, cfg.radius_residue, cfg.max_neighbors)
+    if cfg.pair_frame_features:
+        feat = backbone_features(record, visible)
+        graph.pair = frame_pair_features(feat.frames, feat.frame_valid, record.xyz[:, 1].float(),
+                                         ids, graph)
+    return ids, graph
 
 
 def position_encoding(position: Tensor, width: int):
@@ -145,6 +157,10 @@ class AtomStem(nn.Module):
                                     for _ in range(cfg.atom_layers))
         self.register_buffer("elements", torch.tensor(ATOM_ELEMENT))
         self.pool_score = nn.Linear(cfg.scalar, 1)
+        self.local_frame = not backbone_only and cfg.sc_local_frame
+        if self.local_frame:
+            self.local_embed = nn.Sequential(nn.Linear(4, cfg.scalar), nn.SiLU(),
+                                             nn.Linear(cfg.scalar, cfg.scalar))
 
     def forward(self, record: RecordBatch, visible: Tensor):
         mask = visible & record.present
@@ -166,6 +182,13 @@ class AtomStem(nn.Module):
             rel = torch.where(anchor_seen[:, None], rel, torch.zeros_like(rel))
             unit, _ = normalize(rel)
             s = self.embedding(token)+self.distance_embed(rel.norm(dim=-1, keepdim=True)/4)
+            if self.local_frame:
+                # Position in the residue's visible N-CA-C frame (zero without one).
+                feat = backbone_features(record, visible)
+                ok = feat.frame_valid[ri]
+                local = (feat.frames[ri].transpose(-1, -2) @ rel[..., None])[..., 0]/4
+                s = s+self.local_embed(torch.cat((local, torch.ones_like(local[:, :1])), -1)
+                                       * ok[:, None].to(local.dtype))
             atom = self.seed(s, unit[:, None])
             bonds = atom_bonds(record, ri, ai, self.backbone_only)
             # BB atoms stay residue-local (the residue trunk adds context). SC
@@ -200,7 +223,7 @@ class BackboneEncoder(nn.Module):
         atoms, nodes, valid, ri, ai = self.atom_stem(record, visible)
         nodes = nodes + self.seed(self.internal_stem(feat.internal), feat.directions)
         valid &= feat.visible[:, 1]
-        ids, graph = residue_graph(record, valid, self.cfg.radius_residue, self.cfg.max_neighbors)
+        ids, graph = residue_pair_graph(self.cfg, record, valid, visible)
         h = nodes.index(ids)
         for layer in self.layers:
             h = layer(h, graph)
@@ -246,7 +269,7 @@ class AllAtomFusion(nn.Module):
             atom = layer(atom, graph)
         nodes = scatter_fiber(atom, ri, len(record)) + initial
         valid = (bb.node_valid | sc.node_valid) & visible[:, 1] & record.present[:, 1]
-        ids, graph = residue_graph(record, valid, self.cfg.radius_residue, self.cfg.max_neighbors)
+        ids, graph = residue_pair_graph(self.cfg, record, valid, visible)
         h = self.res_layer(nodes.index(ids), graph)
         nodes = scatter_fiber(h, ids, len(record), mean=False)
         # Atom output = state after the inter-residue atom layers, which also

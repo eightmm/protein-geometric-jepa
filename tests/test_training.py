@@ -248,3 +248,30 @@ def test_pack_size_bounds_groups_without_changing_losses(model):
         whole,_=model(batch,cfg)
         single,_=model(batch,replace(cfg,pack_size=1))
     torch.testing.assert_close(whole,single,atol=2e-5,rtol=2e-5)
+
+
+@pytest.mark.parametrize('task',['aa_infill','sc_infill'])
+def test_symmetric_atom_naming_is_not_a_learnable_difference(model,task):
+    """Swapping the coordinates of equivalent atoms (ASP OD1/OD2, a PHE/TYR
+    ring flip, ...) leaves residue states and the atom loss unchanged."""
+    from protein_jepa.data.synthetic import synthetic_record
+    from protein_jepa.data.constants import AA3, ATOM_ID, SYMMETRIC_RENAMES
+    record=next(r for r in (synthetic_record(24,s) for s in range(50))
+                if {'ASP','PHE'}<={AA3[int(a)] for a in r.seq})
+    xyz=record.xyz.clone()
+    for i,aa in enumerate(record.seq.tolist()):
+        for a,b in SYMMETRIC_RENAMES.get(AA3[aa],{}).items():
+            xyz[i,[ATOM_ID[a],ATOM_ID[b]]]=record.xyz[i,[ATOM_ID[b],ATOM_ID[a]]]
+    renamed=replace(record,xyz=xyz)
+    with torch.no_grad():
+        for view in ('sc','aa'):
+            a=model.online.encoder(record,(view,))[view].nodes
+            b=model.online.encoder(renamed,(view,))[view].nodes
+            torch.testing.assert_close(a.s,b.s,atol=2e-5,rtol=2e-5)
+        obs=make_observation(record,task,.6,torch.Generator().manual_seed(1),2,min_span=2)
+        cfg=TrainConfig()
+        (loss,info,_),=model.group_loss([record],[obs],cfg)
+        (other,other_info,_),=model.group_loss([renamed],[obs],cfg)
+    assert info['atom_loss']>0
+    assert abs(info['atom_loss']-other_info['atom_loss'])<=2e-5*(1+info['atom_loss'])
+    torch.testing.assert_close(loss,other,atol=2e-5,rtol=2e-5)

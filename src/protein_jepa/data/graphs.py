@@ -24,6 +24,28 @@ class Graph:
     # Per-edge smooth-envelope radius: the destination's (k+1)-th candidate
     # distance when top-k truncates, else the graph radius. None = block cutoff.
     cutoff: Tensor | None = None
+    # Optional invariant pair features (residue graphs): local position of the
+    # source in the destination frame, relative orientation, validity.
+    pair: Tensor | None = None
+
+
+PAIR_FEATURES = 13
+
+
+def frame_pair_features(frames: Tensor, frame_valid: Tensor, ca: Tensor, residues: Tensor,
+                        graph: Graph) -> Tensor:
+    """[E, 13] per edge j -> i: R_i^T (x_j - x_i)/10, R_i^T R_j, both-frames-valid flag.
+
+    Frames are column bases (R x_local = x_world), so these are rotation and
+    translation invariant; any pair with an invalid frame is all zero.
+    """
+    src, dst = graph.edge_index
+    i, j = residues[dst], residues[src]
+    ri = frames[i].transpose(-1, -2)
+    local = (ri @ (ca[j]-ca[i])[..., None])[..., 0]/10
+    orientation = (ri @ frames[j]).flatten(1)
+    ok = (frame_valid[i] & frame_valid[j]).to(ca.dtype)[:, None]
+    return torch.cat((local, orientation, ok.new_ones(len(ok), 1)), -1)*ok
 
 
 def _bond_table() -> Tensor:

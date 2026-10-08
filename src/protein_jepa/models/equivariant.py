@@ -71,7 +71,7 @@ class CartesianMessage(nn.Module):
 
 
 class EquivariantBlock(nn.Module):
-    def __init__(self, dims: FiberDims, backend="reference"):
+    def __init__(self, dims: FiberDims, backend="reference", pair_features: int = 0):
         super().__init__()
         if backend == "reference":
             self.message = CartesianMessage(dims)
@@ -81,7 +81,8 @@ class EquivariantBlock(nn.Module):
         else:
             raise ValueError(f"Unknown backend: {backend}")
         self.radial = RadialFeatures()
-        self.gates = nn.Sequential(nn.Linear(19, dims.scalar), nn.SiLU(),
+        self.pair_features = pair_features
+        self.gates = nn.Sequential(nn.Linear(19+pair_features, dims.scalar), nn.SiLU(),
                                    nn.Linear(dims.scalar, dims.scalar+dims.vector+dims.tensor))
         self.activation = FiberActivation(dims)
         self.dims = dims
@@ -90,7 +91,10 @@ class EquivariantBlock(nn.Module):
         src, dst = graph.edge_index
         if src.numel():
             msg = self.message(h.index(src), graph.direction)
-            gs, gv, gt = self.gates(self.radial(graph)).sigmoid().split(
+            radial = self.radial(graph)
+            if self.pair_features:
+                radial = torch.cat((radial, graph.pair), -1)
+            gs, gv, gt = self.gates(radial).sigmoid().split(
                 (self.dims.scalar, self.dims.vector, self.dims.tensor), dim=-1)
             msg = Fiber(msg.s*gs, msg.v*gv[..., None], msg.t*gt[..., None, None])
             pooled = scatter_fiber(msg, dst, len(h.s))

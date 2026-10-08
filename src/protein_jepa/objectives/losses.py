@@ -28,6 +28,15 @@ def latent_distance(pred: Fiber, target: Fiber, mask: Tensor, equivariant: bool 
                      "valid_targets": int(count[0])}
 
 
+def fiber_distance(pred: Fiber, target: Fiber, equivariant: bool = False) -> Tensor:
+    """Per-token latent_distance terms summed: scalar MSE (+ l=1/l=2 Frobenius)."""
+    loss = (pred.s-target.s).square().mean(-1)
+    if equivariant:
+        loss = (loss+(pred.v-target.v).square().sum(-1).mean(-1)/3
+                + (pred.t-target.t).square().sum((-1, -2)).mean(-1)/5)
+    return loss
+
+
 def regularize_latents(latents: list[Tensor], max_per_sample=32):
     """Variance floor and decorrelation on online, normalized context scalars.
 

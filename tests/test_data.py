@@ -162,3 +162,29 @@ def test_packed_graph_ties_do_not_depend_on_other_records():
     mine=packed.edge_index[:,packed.edge_index[1]<4]
     assert torch.equal(mine,alone.edge_index)
     assert bool((packed.edge_index[0]<4).eq(packed.edge_index[1]<4).all())
+
+
+def test_frame_pair_features_convention_and_invariance(protein):
+    """R_i^T (x_j - x_i) uses column-basis frames: a neighbour placed at local
+    offset p reads back p/10; features are invariant to a rigid motion and zero
+    when a frame is missing."""
+    from protein_jepa.data.graphs import residue_graph, frame_pair_features
+    from protein_jepa.geometry.features import backbone_features
+    from protein_jepa.geometry.primitives import random_rotation
+    def features(rec):
+        feat=backbone_features(rec)
+        ids,graph=residue_graph(rec,rec.present[:,1])
+        return graph,frame_pair_features(feat.frames,feat.frame_valid,rec.xyz[:,1],ids,graph),feat
+    graph,pair,feat=features(protein)
+    src,dst=graph.edge_index
+    want=(feat.frames[dst].transpose(-1,-2)@(protein.xyz[src,1]-protein.xyz[dst,1])[...,None])[...,0]/10
+    torch.testing.assert_close(pair[:,:3],want)
+    p=torch.tensor([1.,2.,-3.])
+    torch.testing.assert_close(feat.frames[0].T@(feat.frames[0]@p),p,atol=1e-5,rtol=0)
+    r=random_rotation(torch.Generator().manual_seed(4))
+    _,moved,_=features(protein.rigid_transform(r,torch.tensor([3.,-1.,7.])))
+    torch.testing.assert_close(moved,pair,atol=1e-5,rtol=1e-5)
+    present=protein.present.clone(); present[2,0]=False   # residue 2 loses N -> no frame
+    g2,p2,_=features(replace(protein,present=present))
+    touches=(g2.edge_index==2).any(0)
+    assert touches.any() and bool((p2[touches]==0).all()) and bool((p2[~touches,12]==1).all())

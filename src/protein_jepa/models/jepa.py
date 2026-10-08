@@ -3,7 +3,9 @@ from copy import deepcopy
 import torch
 from torch import nn, Tensor
 from ..config import ModelConfig, TrainConfig
-from ..objectives.losses import latent_distance, regularize_latents
+from ..objectives.losses import fiber_distance, regularize_latents
+from ..data.batch import segment_mean
+from ..data.constants import AA3, ATOM_ID, N_ATOMS, SYMMETRIC_RENAMES
 from ..objectives.tasks import Observation
 from .encoders import MultiViewEncoder
 from ..data.batch import pack, padded_layout, to_padded
@@ -11,6 +13,44 @@ from .predictors import (CrossViewPredictor, ContextLatent, VIEW_NAMES, make_tar
                          topology_atoms, low_rms_fraction)
 from .latents import (TypedLatentHead, latent_spec, make_typed_target, eq_reference,
                       typed_distance, circular_floor, torus_mmd, sphere_mmd)
+
+
+def _rename_table() -> Tensor:
+    """[21, 37]: each slot's partner under the residue's symmetric flip (else itself)."""
+    table = torch.arange(N_ATOMS).repeat(len(AA3)+1, 1)
+    for name, pairs in SYMMETRIC_RENAMES.items():
+        for a, b in pairs.items():
+            table[AA3.index(name), ATOM_ID[a]] = ATOM_ID[b]
+            table[AA3.index(name), ATOM_ID[b]] = ATOM_ID[a]
+    return table
+
+
+RENAMES = _rename_table()
+
+
+def symmetric_atom_loss(pred, target, target_residue, target_slot, residues, slots, seq,
+                        segment, size):
+    """Per-record atom loss, minimized per residue over {names as given,
+    symmetric flip}: equivalent naming (ASP OD1/OD2, a PHE ring flip, ...) is
+    not a learnable difference. Queries without an observed atom are masked."""
+    keys = target_residue*N_ATOMS+target_slot
+    order = keys.argsort()
+    ranked = keys[order]
+
+    def assignment(query_slots):
+        wanted = residues*N_ATOMS+query_slots
+        where = torch.searchsorted(ranked, wanted).clamp_max(len(keys)-1)
+        found = ranked[where] == wanted
+        return fiber_distance(pred, target.index(order[where]), True)*found, found
+    same, found = assignment(slots)
+    flip, found_flip = assignment(RENAMES.to(slots.device)[seq[residues], slots])
+    with torch.no_grad():
+        n = int(residues.max())+1
+        flipped = (torch.zeros(n, device=same.device).index_add_(0, residues, flip.detach())
+                   < torch.zeros(n, device=same.device).index_add_(0, residues, same.detach()))[residues]
+    loss = torch.where(flipped, flip, same)
+    valid = torch.where(flipped, found_flip, found)
+    return segment_mean(loss[valid], segment[valid], size)[0]+pred.s.sum()*0
 
 
 @torch.no_grad()
@@ -176,19 +216,14 @@ class ProteinJEPA(nn.Module):
                                         kinds=('sem', 'eq'), segment=every, size=size)
         atom_loss = node_loss*0
         if atom_residues is not None and len(atom_residues) and len(target.atom_residue):
-            # Align topology queries with observed teacher atoms (key = residue*37+slot);
-            # queries without an observed atom are masked out of the loss.
-            keys = target.atom_residue*37+target.atom_slot
-            order = keys.argsort()
-            wanted = atom_residues*37+atom_slots
-            where = torch.searchsorted(keys[order], wanted).clamp_max(len(keys)-1)
-            observed_atom = keys[order][where] == wanted
+            # Topology queries meet observed teacher atoms by (residue, slot), up
+            # to the residue's symmetric renaming.
             with torch.no_grad():
                 atom_target = make_target(target.atoms, None, floor, instance=True,
-                                          batch=owner[target.atom_residue],
-                                          size=size).index(order[where])
-            atom_loss, _ = latent_distance(prediction.atoms, atom_target, observed_atom, True,
-                                           segment=owner[atom_residues], size=size)
+                                          batch=owner[target.atom_residue], size=size)
+            atom_loss = symmetric_atom_loss(prediction.atoms, atom_target, target.atom_residue,
+                                            target.atom_slot, atom_residues, atom_slots, batch.seq,
+                                            owner[atom_residues], size)
         loss = node_loss + train_cfg.global_weight*global_loss + train_cfg.atom_weight*atom_loss
         top1, retrieved = node_retrieval(prediction.nodes.sem, node_target.sem, node_valid,
                                          owner[query], size)

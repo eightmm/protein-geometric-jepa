@@ -207,7 +207,7 @@ class EffDockInteractionBlock(nn.Module):
                  dual_radial: bool = True, distance_decay: bool = True,
                  norm_rescale: bool = True, smooth_cutoff: bool = True,
                  directional: bool = False, ffn: str = 'gate',
-                 adaptive_cutoff: bool = False):
+                 adaptive_cutoff: bool = False, pair_features: int = 0):
         super().__init__()
         if radial_hidden < 1 or expansion < 1 or cutoff <= 0:
             raise ValueError('Block widths/expansion/cutoff must be positive.')
@@ -235,7 +235,8 @@ class EffDockInteractionBlock(nn.Module):
         self.pre_norm = FiberRMSNorm(dims)
         self.register_buffer('centers', torch.linspace(0, cutoff, 16))
         self.edge_embedding = nn.Embedding(NUM_EDGE_TYPES, 16)
-        self.radial = nn.Sequential(nn.Linear(19+16, radial_hidden), nn.SiLU())
+        self.pair_features = pair_features
+        self.radial = nn.Sequential(nn.Linear(19+16+pair_features, radial_hidden), nn.SiLU())
         if dual_radial:
             self.radial_in = nn.Linear(radial_hidden, dims.invariant)
             self.radial_out = nn.Linear(radial_hidden, dims.invariant)
@@ -280,7 +281,10 @@ class EffDockInteractionBlock(nn.Module):
             if types is None:
                 types = torch.zeros_like(src)
             radial = (-((graph.distance[:, None]-self.centers)/(self.cutoff/15)).square()).exp()
-            trunk = self.radial(torch.cat((radial, graph.relation, self.edge_embedding(types)), -1))
+            edge = [radial, graph.relation, self.edge_embedding(types)]
+            if self.pair_features:
+                edge.append(graph.pair)
+            trunk = self.radial(torch.cat(edge, -1))
             source = normed.index(src)
             if self.dual_radial:
                 source = channel_scale(source, 1+0.5*self.radial_in(trunk).tanh(), self.dims)

@@ -49,6 +49,11 @@ CHI = {
 }
 # Zero-based chi slot indices whose terminal naming admits a pi shift.
 PI_PERIODIC = {"ASP": {1}, "GLU": {2}, "PHE": {1}, "TYR": {1}, "ARG": {4}}
+# Atom names that a 180-degree flip exchanges without changing the structure
+# (AlphaFold's renaming set). Each residue flips as a unit (both ring pairs).
+# Not ARG NH1/NH2 (cis/trans to CD) or LEU/VAL methyls (prochiral).
+SYMMETRIC_RENAMES = {"ASP": {"OD1": "OD2"}, "GLU": {"OE1": "OE2"},
+                     "PHE": {"CD1": "CD2", "CE1": "CE2"}, "TYR": {"CD1": "CD2", "CE1": "CE2"}}
 
 SC_BONDS = {
     "ALA": [], "GLY": [],
