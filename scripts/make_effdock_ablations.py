@@ -43,7 +43,7 @@ def main():
                                   'frame_channels': 2},
         # Spec-level geometry inputs and the global slot (spec 6.3, 7.1, 13.3).
         'no_pair_frames': {'interaction': 'effdock', 'pair_frame_features': False},
-        'no_sc_local_frame': {'interaction': 'effdock', 'sc_local_frame': False},
+        'sc_local_frame': {'interaction': 'effdock', 'sc_local_frame': True},
         'mean_readout': {'interaction': 'effdock', 'global_readout': 'mean'},
     }
     training_changes = {

@@ -41,10 +41,12 @@ class ModelConfig:
     # 'local': per-residue SC view (the default contract). 'spatial' (opt-in experiment):
     # SC atoms also see other residues' SC atoms.
     sc_context: str = "local"
-    # Residue graphs carry invariant pair geometry R_i^T(x_j-x_i), R_i^T R_j (spec 6.3);
-    # SC atoms see their position in the residue's backbone frame (spec 7.1).
+    # Residue graphs carry invariant pair geometry R_i^T(x_j-x_i), R_i^T R_j (spec 6.3).
     pair_frame_features: bool = True
-    sc_local_frame: bool = True
+    # Opt-in: SC atoms also see their position in the residue's backbone frame
+    # (spec 7.1 lists it as optional). On 22 proteins it did not change retrieval
+    # and inflated the SC latent scale (pooled effective rank 49 -> 3).
+    sc_local_frame: bool = False
     # Global readout: learned invariant attention, or uniform mean pooling (ablation).
     global_readout: str = "attention"
     # Predictor heads for the raw-geometry reconstruction baseline.

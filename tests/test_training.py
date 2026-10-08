@@ -130,7 +130,8 @@ def test_overfit_fits_residue_specific_targets(tiny_cfg):
     cfg=replace(tiny_cfg,interaction='effdock',effdock_radial_hidden=24)
     tc=TrainConfig(tasks=['seq_to_bb','bb_infill'],ema=.999,ema_end=1.,mask_min_span=2,
                    variance_weight=0.,covariance_weight=0.,circular_weight=0.)
-    result=overfit(cfg,tc,[synthetic_record(20,1)],120,5e-3,120,'cpu',0,log=lambda *_:None)
+    # 200 steps: at 120 the margin depended on the exact initialization draw.
+    result=overfit(cfg,tc,[synthetic_record(20,1)],200,5e-3,200,'cpu',0,log=lambda *_:None)
     last=result['history'][-1]
     assert result['loss_ratio']<.5
     assert last['node_top1']>2*last['chance']
