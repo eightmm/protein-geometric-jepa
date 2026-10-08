@@ -216,7 +216,7 @@ def test_ablation_writer_accepts_every_shipped_gpu_preset(tmp_path):
         subprocess.run([sys.executable, str(root/'scripts/make_effdock_ablations.py'),
                         '--base', str(root/'configs'/preset), '--output', str(out), '--seeds', '1'],
                        check=True, capture_output=True)
-        assert len(list(out.glob('*.yaml'))) == 23
+        assert len(list(out.glob("*.yaml"))) == 37
 
 
 def test_format1_checkpoint_rejected(tiny_cfg, tmp_path):

@@ -8,7 +8,8 @@ from ..objectives.losses import fiber_distance, regularize_latents
 from ..data.batch import segment_mean
 from ..data.constants import AA3, ATOM_ID, N_ATOMS, SYMMETRIC_RENAMES
 from ..objectives.tasks import Observation
-from .encoders import MultiViewEncoder
+from .encoders import MultiViewEncoder, EncodedView
+from .fibers import Fiber
 from ..data.batch import pack, padded_layout, to_padded
 from .predictors import (CrossViewPredictor, ContextLatent, VIEW_NAMES, make_target,
                          topology_atoms, low_rms_fraction)
@@ -378,6 +379,74 @@ class ProteinJEPA(nn.Module):
         result = self.online.encoder(record, mapping[mode])
         self.train(was_training)
         return result
+
+    # Downstream entry points (spec 25); the teacher is not used at inference.
+    def encode_sequence(self, record_or_sequence):
+        """Sequence-only: residue states and the sequence CLS (no structure input)."""
+        if isinstance(record_or_sequence, str):
+            from ..data.synthetic import sequence_record
+            record_or_sequence = sequence_record(record_or_sequence)
+        return self.encode(record_or_sequence, "sequence")["seq"]
+
+    def encode_backbone(self, record):
+        """Backbone atoms, residues and global irreps; the SC/AA paths never run."""
+        return self.encode(record, "backbone")["bb"]
+
+    def encode_all_atom(self, record):
+        """All-atom atom states, residue states and global irreps."""
+        return self.encode(record, "all_atom")["aa"]
+
+    def encode_multimodal(self, record):
+        """Every modality's own outputs (no joint fusion token)."""
+        return self.encode(record, "multimodal")
+
+    @torch.no_grad()
+    def encode_windows(self, record, mode="backbone", window=256, stride=128):
+        """Overlapping-window inference for proteins longer than the training crops.
+
+        Node and atom states are averaged over the windows that contain them,
+        weighted towards each window's centre (edge residues lack context and
+        carry crop-boundary invalidity). All windows share the world frame, so
+        averaging l=1/l=2 states stays equivariant. Global states are NOT
+        averaged: each view's `global_state` holds one state per window, since
+        a mean of crop globals is not a full-protein global (spec 25).
+        Returns ({view: EncodedView over the whole record}, window starts).
+        """
+        if window < 1 or stride < 1:
+            raise ValueError("window and stride must be positive.")
+        n = len(record)
+        starts = [0] if n <= window else list(range(0, n-window+1, stride))
+        if starts[-1]+window < n:
+            starts.append(n-window)
+        crops = [record.crop(start, window) for start in starts]
+        packed = pack(crops)
+        local = torch.arange(len(packed), device=packed.batch.device)-packed.ptr[packed.batch]
+        lengths = (packed.ptr[1:]-packed.ptr[:-1])[packed.batch]
+        position = torch.tensor(starts, device=local.device)[packed.batch]+local
+        centre = (1+torch.minimum(local, lengths-1-local)).float()
+        out = {}
+        for name, view in self.encode(crops, mode).items():
+            weight = centre*view.node_valid
+            nodes, total = self._window_mean(view.nodes, position, weight, n)
+            atoms = residue = slot = None
+            if view.atoms is not None:
+                key = position[view.atom_residue]*N_ATOMS+view.atom_slot
+                keys, inverse = torch.unique(key, return_inverse=True)
+                atoms, _ = self._window_mean(view.atoms, inverse, centre[view.atom_residue], len(keys))
+                residue, slot = keys//N_ATOMS, keys % N_ATOMS
+            out[name] = EncodedView(nodes, total > 0, view.global_state, view.global_valid,
+                                    atoms, residue, slot)
+        return out, starts
+
+    @staticmethod
+    def _window_mean(h, index, weight, size):
+        total = weight.new_zeros(size).index_add_(0, index, weight)
+        parts = []
+        for x in (h.s, h.v, h.t):
+            w = weight.reshape((-1,)+(1,)*(x.ndim-1))
+            summed = x.new_zeros((size, *x.shape[1:])).index_add_(0, index, x*w)
+            parts.append(summed/total.clamp_min(1e-12).reshape((-1,)+(1,)*(x.ndim-1)))
+        return Fiber(*parts), total
 
     @torch.no_grad()
     def latents(self, record, mode="sequence") -> dict[str, ContextLatent]:

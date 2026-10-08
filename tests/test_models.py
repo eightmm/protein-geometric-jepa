@@ -242,3 +242,29 @@ def test_tensor_channels_symmetric_traceless(model,protein):
 def test_unknown_backend_rejected(tiny_cfg):
     with pytest.raises(ValueError):
         EquivariantBlock(tiny_cfg.dims,'pretend-cueq')
+
+
+def test_encode_windows_covers_long_records_and_stays_equivariant(model):
+    """Overlapping windows: one window reproduces encode(); a long record gets
+    every residue covered, per-window globals, and rotates correctly."""
+    from protein_jepa.data.synthetic import synthetic_record
+    from protein_jepa.geometry.primitives import random_rotation
+    short=synthetic_record(12,4)
+    views,starts=model.encode_windows(short,'backbone',window=16,stride=8)
+    assert starts==[0]
+    assert_fiber_close(views['bb'].nodes,model.encode(short,'backbone')['bb'].nodes)
+    long=synthetic_record(37,5)
+    views,starts=model.encode_windows(long,'all_atom',window=16,stride=8)
+    assert starts==[0,8,16,21] and len(views['aa'].global_state.s)==4
+    assert bool(views['aa'].node_valid.all())
+    # Residues 0-7 lie in the first window only: their atoms are that window's.
+    first=model.encode(long.crop(0,16),'all_atom')['aa']
+    keep=first.atom_residue<8
+    mine=views['aa'].atom_residue<8
+    assert torch.equal(views['aa'].atom_slot[mine],first.atom_slot[keep][first.atom_residue[keep].mul(37).add(first.atom_slot[keep]).argsort()])
+    # Window averaging is mode-independent; the backbone graph has no
+    # near-tied all-atom neighbours that a rotation could reorder at float noise.
+    r=random_rotation(torch.Generator().manual_seed(1))
+    bb,_=model.encode_windows(long,'backbone',window=16,stride=8)
+    moved,_=model.encode_windows(long.rigid_transform(r,torch.ones(3)),'backbone',window=16,stride=8)
+    assert_fiber_close(moved['bb'].nodes,bb['bb'].nodes.rotate(r),atol=1e-4,rtol=1e-4)

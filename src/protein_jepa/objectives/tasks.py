@@ -23,6 +23,10 @@ TASKS = {
     "sc_infill": TaskSpec(("seq", "bb", "aa"), "aa", True, True),
     "bb_infill": TaskSpec(("bb",), "bb", True),
     "aa_infill": TaskSpec(("seq", "aa"), "aa", True, True),
+    # Sequence-only JEPA (masked sequence -> sequence latents): the baseline for
+    # whether structure prediction adds anything to sequence representations.
+    # Opt-in; not in the default task list.
+    "seq_infill": TaskSpec(("seq",), "seq", False),
 }
 
 
@@ -96,6 +100,8 @@ def make_observation(record: ProteinRecord, name: str, fraction: float,
         # Backbone at the same residue is intentionally available.
     elif name in {"bb_infill", "aa_infill"}:
         atoms[target] = False  # closure: no alternative geometric view survives
+    elif name == "seq_infill":
+        seq = seq & ~target
     elif name == "seq_to_bb":
         seq = seq & ~target   # partial sequence -> full BB parent-crop semantics
         target[:] = True
