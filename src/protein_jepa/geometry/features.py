@@ -106,6 +106,22 @@ class ChiFeatures:
     encoded: Tensor
 
 
+def _chi_tables():
+    """Per residue type (row 20 = UNK): chi atom slots, defined mask, period."""
+    atoms = torch.zeros(len(AA3)+1, 5, 4, dtype=torch.long)
+    defined = torch.zeros(len(AA3)+1, 5, dtype=torch.bool)
+    period = torch.ones(len(AA3)+1, 5)
+    for aa, name in enumerate(AA3):
+        for j, names in enumerate(CHI[name]):
+            atoms[aa, j] = torch.tensor([ATOM_ID[n] for n in names])
+            defined[aa, j] = True
+            period[aa, j] = 2 if j in PI_PERIODIC.get(name, set()) else 1
+    return atoms, defined, period
+
+
+CHI_TABLES = _chi_tables()
+
+
 def chi_features(record: ProteinRecord, visible: Tensor | None = None,
                  include_chi5: bool = False) -> ChiFeatures:
     slots = 5 if include_chi5 else 4
@@ -114,20 +130,10 @@ def chi_features(record: ProteinRecord, visible: Tensor | None = None,
     if visible is not None:
         seen &= visible
     x = torch.where(seen[..., None], x, torch.zeros_like(x))
-    values = x.new_zeros(len(record), slots)
-    defined = torch.zeros_like(values, dtype=torch.bool)
-    valid = torch.zeros_like(defined)
-    periods = torch.ones_like(values)
-    for i, aa in enumerate(record.seq.detach().cpu().tolist()):
-        if aa >= len(AA3):
-            continue
-        name = AA3[aa]
-        for j, names in enumerate(CHI[name][:slots]):
-            ids = [ATOM_ID[n] for n in names]
-            defined[i, j] = True
-            periods[i, j] = 2 if j in PI_PERIODIC.get(name, set()) else 1
-            val, ok = dihedral(*(x[i, k] for k in ids))
-            ok &= seen[i, ids].all()
-            valid[i, j] = ok
-            values[i, j] = torch.where(ok, val, torch.zeros_like(val))
-    return ChiFeatures(values, defined, valid, periods, circular_encode(values, valid, periods))
+    atoms, defined, period = (t.to(x.device)[record.seq, :slots] for t in CHI_TABLES)
+    rows = torch.arange(len(record), device=x.device)[:, None, None]
+    points = x[rows, atoms]                                   # [L, slots, 4, 3]
+    values, valid = dihedral(*points.unbind(-2))
+    valid &= defined & seen[rows, atoms].all(-1)
+    values = torch.where(valid, values, torch.zeros_like(values))
+    return ChiFeatures(values, defined, valid, period, circular_encode(values, valid, period))

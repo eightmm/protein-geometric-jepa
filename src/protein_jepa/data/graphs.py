@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 from .records import ProteinRecord
-from .constants import AA3, ATOM_ID, SC_BONDS
+from .constants import AA3, ATOM_ID, N_ATOMS, SC_BONDS
 from ..geometry.primitives import normalize
 
 
@@ -25,25 +25,42 @@ class Graph:
     cutoff: Tensor | None = None
 
 
-def atom_bonds(record: ProteinRecord, residues: Tensor, slots: Tensor, backbone_only=False) -> Tensor:
-    lookup = {(int(i), int(a)): j for j, (i, a) in enumerate(zip(residues.tolist(), slots.tolist()))}
-    edges = []
-    for i in range(len(record)):
+def _bond_table() -> Tensor:
+    """[21, B, 2] intra-residue bonded slot pairs (-1 padded); the first three
+    columns are N-CA, CA-C, C-O, so backbone-only graphs slice them."""
+    rows = []
+    for aa in range(len(AA3)+1):
         specs = ["N-CA", "CA-C", "C-O"]
-        if not backbone_only:
-            aa = int(record.seq[i])
-            if aa < len(AA3):
-                specs += (["CA-CB"] if AA3[aa] != "GLY" else []) + SC_BONDS[AA3[aa]]
-        for spec in specs:
-            a, b = spec.split("-")
-            if (i, ATOM_ID[a]) in lookup and (i, ATOM_ID[b]) in lookup:
-                u, v = lookup[i, ATOM_ID[a]], lookup[i, ATOM_ID[b]]
-                edges.extend(((u, v), (v, u)))
-        if i < len(record)-1 and bool(record.peptide[i]):
-            if (i, ATOM_ID['C']) in lookup and (i+1, ATOM_ID['N']) in lookup:
-                u, v = lookup[i, ATOM_ID['C']], lookup[i+1, ATOM_ID['N']]
-                edges.extend(((u, v), (v, u)))
-    return torch.tensor(edges, dtype=torch.long, device=record.xyz.device).reshape(-1, 2).T
+        if aa < len(AA3):
+            specs += (["CA-CB"] if AA3[aa] != "GLY" else []) + SC_BONDS[AA3[aa]]
+        rows.append([[ATOM_ID[x] for x in spec.split("-")] for spec in specs])
+    table = torch.full((len(rows), max(map(len, rows)), 2), -1, dtype=torch.long)
+    for aa, pairs in enumerate(rows):
+        table[aa, :len(pairs)] = torch.tensor(pairs)
+    return table
+
+
+BOND_TABLE = _bond_table()
+
+
+def atom_bonds(record: ProteinRecord, residues: Tensor, slots: Tensor, backbone_only=False) -> Tensor:
+    """Directed covalent edges among the given atoms (both endpoints present)."""
+    device = record.xyz.device
+    n = len(record)
+    index = torch.full((n, N_ATOMS), -1, dtype=torch.long, device=device)
+    index[residues, slots] = torch.arange(len(residues), device=device)
+    table = BOND_TABLE.to(device)[record.seq]
+    if backbone_only:
+        table = table[:, :3]
+    rows = torch.arange(n, device=device)[:, None]
+    u, v = index[rows, table[..., 0].clamp_min(0)], index[rows, table[..., 1].clamp_min(0)]
+    keep = (table[..., 0] >= 0) & (u >= 0) & (v >= 0)
+    u, v = u[keep], v[keep]
+    if n > 1:
+        c, nxt = index[:-1, ATOM_ID['C']], index[1:, ATOM_ID['N']]
+        peptide = record.peptide & (c >= 0) & (nxt >= 0)
+        u, v = torch.cat((u, c[peptide])), torch.cat((v, nxt[peptide]))
+    return torch.stack((torch.cat((u, v)), torch.cat((v, u))))
 
 
 def make_graph(x: Tensor, residue_index: Tensor, seq_pos: Tensor, bonds: Tensor,
@@ -121,12 +138,9 @@ def residue_graph(record: ProteinRecord, valid: Tensor, radius=12.0, max_neighbo
     ids = torch.where(valid)[0]
     inverse = torch.full((len(record),), -1, dtype=torch.long, device=ids.device)
     inverse[ids] = torch.arange(len(ids), device=ids.device)
-    bonds = []
-    for i in torch.where(record.peptide)[0].tolist():
-        if bool(valid[i]) and bool(valid[i+1]):
-            a, b = int(inverse[i]), int(inverse[i+1])
-            bonds.extend(((a, b), (b, a)))
-    bonds = torch.tensor(bonds, device=ids.device, dtype=torch.long).reshape(-1, 2).T
+    link = torch.where(record.peptide & valid[:-1] & valid[1:])[0]
+    a, b = inverse[link], inverse[link+1]
+    bonds = torch.stack((torch.cat((a, b)), torch.cat((b, a))))
     graph = make_graph(record.xyz[ids, 1], ids, record.seq_pos, bonds, radius, max_neighbors,
                        node_kind=torch.full_like(ids, RESIDUE))
     return ids, graph
