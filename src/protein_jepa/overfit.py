@@ -41,22 +41,28 @@ def evaluate_pairs(model: ProteinJEPA, pairs, train_cfg: TrainConfig) -> dict:
     was_training = model.training
     model.eval()
     by_task, top1, chance, scalars = defaultdict(list), defaultdict(list), defaultdict(list), []
+    by_view = defaultdict(list)
     for (_, observation), (loss, info, inputs) in zip(pairs, model.sample_losses(pairs, train_cfg, 16)):
         by_task[observation.task_name].append(float(loss))
         if 'node_top1' in info:
             top1[observation.task_name].append(info['node_top1'])
             chance[observation.task_name].append(info['node_chance'])
         scalars += [z[0] for z in inputs.values()]
+        for name, z in inputs.items():
+            by_view[name].append(z[0])
     model.train(was_training)
     tasks = {t: {'loss': sum(v)/len(v),
                  'node_top1': sum(top1[t])/len(top1[t]) if top1[t] else None,
                  'chance': sum(chance[t])/len(chance[t]) if chance[t] else None}
              for t, v in by_task.items()}
+    # Pooled rank mixes views of different scale (one large view dominates);
+    # the per-view ranks show which view, if any, actually collapsed.
     rank = effective_rank(torch.cat(scalars)) if scalars else 0.0
+    view_rank = {name: effective_rank(torch.cat(v)) for name, v in sorted(by_view.items())}
     return {'loss': sum(x['loss'] for x in tasks.values())/len(tasks),
             'node_top1': _mean([x['node_top1'] for x in tasks.values()]),
             'chance': _mean([x['chance'] for x in tasks.values()]),
-            'effective_rank': rank, 'tasks': tasks}
+            'effective_rank': rank, 'view_effective_rank': view_rank, 'tasks': tasks}
 
 
 def _mean(values):
